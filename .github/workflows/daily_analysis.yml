@@ -57,6 +57,11 @@ jobs:
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
           
+          # HiAPI 三方 Gemini 代理（备选）
+          HIAPI_API_KEY: ${{ secrets.HIAPI_API_KEY }}
+          HIAPI_BASE_URL: ${{ vars.HIAPI_BASE_URL || secrets.HIAPI_BASE_URL || 'https://hiapi.online/v1' }}
+          HIAPI_MODEL: ${{ vars.HIAPI_MODEL || secrets.HIAPI_MODEL || 'gemini-2.5-pro' }}
+          
           # OpenAI 兼容 API（备选）
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
