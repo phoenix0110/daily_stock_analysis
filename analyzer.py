@@ -593,7 +593,7 @@ class GeminiAnalyzer:
     
     def _call_openai_api(self, prompt: str, generation_config: dict) -> str:
         """
-        调用 OpenAI 兼容 API
+        调用 OpenAI 兼容 API（包括 HiAPI）
         
         Args:
             prompt: 提示词
@@ -606,15 +606,23 @@ class GeminiAnalyzer:
         max_retries = config.gemini_max_retries
         base_delay = config.gemini_retry_delay
         
+        # 根据当前模式选择正确的客户端
+        if self._use_hiapi:
+            client = self._hiapi_client
+            api_name = "HiAPI"
+        else:
+            client = self._openai_client
+            api_name = "OpenAI"
+        
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
                     delay = base_delay * (2 ** (attempt - 1))
                     delay = min(delay, 60)
-                    logger.info(f"[OpenAI] 第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
+                    logger.info(f"[{api_name}] 第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
                     time.sleep(delay)
                 
-                response = self._openai_client.chat.completions.create(
+                response = client.chat.completions.create(
                     model=self._current_model_name,
                     messages=[
                         {"role": "system", "content": self.SYSTEM_PROMPT},
@@ -627,21 +635,21 @@ class GeminiAnalyzer:
                 if response and response.choices and response.choices[0].message.content:
                     return response.choices[0].message.content
                 else:
-                    raise ValueError("OpenAI API 返回空响应")
+                    raise ValueError(f"{api_name} API 返回空响应")
                     
             except Exception as e:
                 error_str = str(e)
                 is_rate_limit = '429' in error_str or 'rate' in error_str.lower() or 'quota' in error_str.lower()
                 
                 if is_rate_limit:
-                    logger.warning(f"[OpenAI] API 限流，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
+                    logger.warning(f"[{api_name}] API 限流，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
                 else:
-                    logger.warning(f"[OpenAI] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
+                    logger.warning(f"[{api_name}] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
                 
                 if attempt == max_retries - 1:
                     raise
         
-        raise Exception("OpenAI API 调用失败，已达最大重试次数")
+        raise Exception(f"{api_name} API 调用失败，已达最大重试次数")
     
     def _call_api_with_retry(self, prompt: str, generation_config: dict) -> str:
         """
@@ -845,7 +853,17 @@ class GeminiAnalyzer:
                 "max_output_tokens": 8192,
             }
             
-            logger.info(f"[LLM调用] 开始调用 Gemini API (temperature={generation_config['temperature']}, max_tokens={generation_config['max_output_tokens']})...")
+            # 确定当前使用的 API 类型
+            if self._use_hiapi:
+                api_type = "HiAPI"
+            elif self._use_openai:
+                api_type = "OpenAI"
+            elif self._model:
+                api_type = "Gemini"
+            else:
+                api_type = "Unknown"
+            
+            logger.info(f"[LLM调用] 开始调用 {api_type} API (temperature={generation_config['temperature']}, max_tokens={generation_config['max_output_tokens']})...")
             
             # 使用带重试的 API 调用
             start_time = time.time()
@@ -853,7 +871,7 @@ class GeminiAnalyzer:
             elapsed = time.time() - start_time
             
             # 记录响应信息
-            logger.info(f"[LLM返回] Gemini API 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
+            logger.info(f"[LLM返回] {api_type} API 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
             
             # 记录响应预览（INFO级别）和完整响应（DEBUG级别）
             response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
