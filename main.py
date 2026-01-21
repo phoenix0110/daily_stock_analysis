@@ -45,6 +45,7 @@ from config import get_config, Config
 from storage import get_db, DatabaseManager
 from data_provider import DataFetcherManager
 from data_provider.akshare_fetcher import AkshareFetcher, RealtimeQuote, ChipDistribution
+from data_provider.tushare_fetcher import TushareFetcher
 from analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
 from notification import NotificationService, NotificationChannel, send_daily_report
 from search_service import SearchService, SearchResponse
@@ -151,6 +152,7 @@ class StockAnalysisPipeline:
         self.db = get_db()
         self.fetcher_manager = DataFetcherManager()
         self.akshare_fetcher = AkshareFetcher()  # 用于获取增强数据（量比、筹码等）
+        self.tushare_fetcher = TushareFetcher()  # Tushare 数据源（用于股票名称等备选）
         self.trend_analyzer = StockTrendAnalyzer()  # 趋势分析器
         self.analyzer = GeminiAnalyzer()
         self.notifier = NotificationService()
@@ -162,12 +164,64 @@ class StockAnalysisPipeline:
             serpapi_keys=self.config.serpapi_keys,
         )
         
+        # 初始化股票名称缓存（使用 Tushare 作为备选来源）
+        self._stock_name_cache: Dict[str, str] = {}
+        self._init_stock_name_cache()
+        
         logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")
         logger.info("已启用趋势分析器 (MA5>MA10>MA20 多头判断)")
         if self.search_service.is_available:
             logger.info("搜索服务已启用 (Tavily/SerpAPI)")
         else:
             logger.warning("搜索服务未启用（未配置 API Key）")
+    
+    def _init_stock_name_cache(self) -> None:
+        """
+        初始化股票名称缓存
+        
+        数据来源优先级：
+        1. 硬编码的 STOCK_NAME_MAP（常用股票）
+        2. Tushare stock_basic 接口（全量A股）
+        
+        此缓存用于在 AkShare 实时行情获取失败时提供股票名称
+        """
+        # 1. 先加载硬编码映射
+        self._stock_name_cache.update(STOCK_NAME_MAP)
+        logger.info(f"[名称缓存] 已加载 {len(STOCK_NAME_MAP)} 个硬编码股票名称")
+        
+        # 2. 尝试从 Tushare 获取全量股票名称
+        if self.tushare_fetcher.is_available:
+            try:
+                tushare_names = self.tushare_fetcher.get_all_stock_names()
+                if tushare_names:
+                    # Tushare 数据作为补充，不覆盖已有的硬编码
+                    for code, name in tushare_names.items():
+                        if code not in self._stock_name_cache:
+                            self._stock_name_cache[code] = name
+                    logger.info(f"[名称缓存] 已从 Tushare 加载 {len(tushare_names)} 个股票名称，"
+                               f"缓存总数: {len(self._stock_name_cache)}")
+            except Exception as e:
+                logger.warning(f"[名称缓存] 从 Tushare 加载股票名称失败: {e}")
+        else:
+            logger.info("[名称缓存] Tushare 未配置，仅使用硬编码股票名称")
+    
+    def get_stock_name(self, code: str) -> str:
+        """
+        获取股票名称（带缓存）
+        
+        查找优先级：
+        1. 本地缓存（包含硬编码 + Tushare 数据）
+        2. 返回兜底名称 "股票{code}"
+        
+        Args:
+            code: 股票代码（6位数字）
+            
+        Returns:
+            股票名称
+        """
+        if code in self._stock_name_cache:
+            return self._stock_name_cache[code]
+        return f'股票{code}'
     
     def fetch_and_save_stock_data(
         self, 
@@ -234,25 +288,23 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None（如果分析失败）
         """
         try:
-            # 获取股票名称（优先从实时行情获取真实名称）
-            stock_name = STOCK_NAME_MAP.get(code, '')
+            # 获取股票名称（优先级：缓存 -> 实时行情 -> 兜底）
+            stock_name = self.get_stock_name(code)  # 先从缓存获取
             
             # Step 1: 获取实时行情（量比、换手率等）
             realtime_quote: Optional[RealtimeQuote] = None
             try:
                 realtime_quote = self.akshare_fetcher.get_realtime_quote(code)
                 if realtime_quote:
-                    # 使用实时行情返回的真实股票名称
-                    if realtime_quote.name:
+                    # 如果实时行情有名称，优先使用（更准确）
+                    if realtime_quote.name and not realtime_quote.name.startswith('股票'):
                         stock_name = realtime_quote.name
+                        # 更新缓存
+                        self._stock_name_cache[code] = stock_name
                     logger.info(f"[{code}] {stock_name} 实时行情: 价格={realtime_quote.price}, "
                               f"量比={realtime_quote.volume_ratio}, 换手率={realtime_quote.turnover_rate}%")
             except Exception as e:
-                logger.warning(f"[{code}] 获取实时行情失败: {e}")
-            
-            # 如果还是没有名称，使用代码作为名称
-            if not stock_name:
-                stock_name = f'股票{code}'
+                logger.warning(f"[{code}] 获取实时行情失败: {e}，使用缓存名称: {stock_name}")
             
             # Step 2: 获取筹码分布
             chip_data: Optional[ChipDistribution] = None
@@ -747,7 +799,12 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_market_review(notifier: NotificationService, analyzer=None, search_service=None) -> Optional[str]:
+def run_market_review(
+    notifier: NotificationService, 
+    analyzer=None, 
+    search_service=None,
+    tushare_fetcher: Optional[TushareFetcher] = None
+) -> Optional[str]:
     """
     执行大盘复盘分析
     
@@ -755,6 +812,7 @@ def run_market_review(notifier: NotificationService, analyzer=None, search_servi
         notifier: 通知服务
         analyzer: AI分析器（可选）
         search_service: 搜索服务（可选）
+        tushare_fetcher: Tushare 数据源（可选，用于备选获取大盘数据）
     
     Returns:
         复盘报告文本
@@ -764,7 +822,8 @@ def run_market_review(notifier: NotificationService, analyzer=None, search_servi
     try:
         market_analyzer = MarketAnalyzer(
             search_service=search_service,
-            analyzer=analyzer
+            analyzer=analyzer,
+            tushare_fetcher=tushare_fetcher
         )
         
         # 执行复盘
@@ -834,7 +893,8 @@ def run_full_analysis(
             review_result = run_market_review(
                 notifier=pipeline.notifier,
                 analyzer=pipeline.analyzer,
-                search_service=pipeline.search_service
+                search_service=pipeline.search_service,
+                tushare_fetcher=pipeline.tushare_fetcher
             )
             # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
@@ -954,6 +1014,7 @@ def main() -> int:
             # 初始化搜索服务和分析器（如果有配置）
             search_service = None
             analyzer = None
+            tushare_fetcher = TushareFetcher()  # Tushare 备选数据源
             
             if config.bocha_api_keys or config.tavily_api_keys or config.serpapi_keys:
                 search_service = SearchService(
@@ -965,7 +1026,7 @@ def main() -> int:
             if config.gemini_api_key:
                 analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
             
-            run_market_review(notifier, analyzer, search_service)
+            run_market_review(notifier, analyzer, search_service, tushare_fetcher)
             return 0
         
         # 模式2: 定时任务模式
