@@ -82,16 +82,22 @@ class TushareFetcher(BaseFetcher):
             import tushare as ts
             
             token = config.tushare_token
+            http_url = config.tushare_http_url
+            
+            # 调试日志：打印 token 前10位和后4位（隐藏中间部分）
+            if token:
+                token_preview = f"{token[:10]}...{token[-4:]}" if len(token) > 14 else token[:4] + "..."
+                logger.info(f"[Tushare] Token: {token_preview}, HTTP_URL: {http_url or '默认'}")
             
             # 获取 API 实例（传入 token）
             self._api = ts.pro_api(token)
             
             # 如果配置了自定义服务端点，需要额外设置
-            if config.tushare_http_url:
+            if http_url:
                 # 强制设置 token 和 http_url（某些 Tushare 服务需要）
                 self._api._DataApi__token = token
-                self._api._DataApi__http_url = config.tushare_http_url
-                logger.info(f"Tushare API 初始化成功（自定义端点: {config.tushare_http_url}）")
+                self._api._DataApi__http_url = http_url
+                logger.info(f"Tushare API 初始化成功（自定义端点: {http_url}）")
             else:
                 logger.info("Tushare API 初始化成功（标准模式）")
             
