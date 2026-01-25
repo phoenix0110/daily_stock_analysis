@@ -19,7 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 
-from enums import ReportType
+from src.enums import ReportType
+from bot.models import BotMessage
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,8 @@ class AnalysisService:
     def submit_analysis(
         self, 
         code: str, 
-        report_type: Union[ReportType, str] = ReportType.SIMPLE
+        report_type: Union[ReportType, str] = ReportType.SIMPLE,
+        source_message: Optional[BotMessage] = None
     ) -> Dict[str, Any]:
         """
         提交异步分析任务
@@ -190,7 +192,7 @@ class AnalysisService:
         task_id = f"{code}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         
         # 提交到线程池
-        self.executor.submit(self._run_analysis, code, task_id, report_type)
+        self.executor.submit(self._run_analysis, code, task_id, report_type, source_message)
         
         logger.info(f"[AnalysisService] 已提交股票 {code} 的分析任务, task_id={task_id}, report_type={report_type.value}")
         
@@ -219,7 +221,8 @@ class AnalysisService:
         self, 
         code: str, 
         task_id: str, 
-        report_type: ReportType = ReportType.SIMPLE
+        report_type: ReportType = ReportType.SIMPLE,
+        source_message: Optional[BotMessage] = None
     ) -> Dict[str, Any]:
         """
         执行单只股票分析
@@ -245,14 +248,18 @@ class AnalysisService:
         
         try:
             # 延迟导入避免循环依赖
-            from config import get_config
+            from src.config import get_config
             from main import StockAnalysisPipeline
             
             logger.info(f"[AnalysisService] 开始分析股票: {code}")
             
             # 创建分析管道
             config = get_config()
-            pipeline = StockAnalysisPipeline(config=config, max_workers=1)
+            pipeline = StockAnalysisPipeline(
+                config=config,
+                max_workers=1,
+                source_message=source_message
+            )
             
             # 执行单只股票分析（启用单股推送）
             result = pipeline.process_single_stock(

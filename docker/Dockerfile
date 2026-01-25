@@ -22,12 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # 安装 Python 依赖
-RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制应用代码
 COPY *.py ./
 COPY data_provider/ ./data_provider/
 COPY web/ ./web/
+COPY bot/ ./bot/
 
 # 创建数据目录
 RUN mkdir -p /app/data /app/logs /app/reports

@@ -19,6 +19,7 @@ import logging
 import json
 import smtplib
 import re
+import markdown2
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from email.mime.text import MIMEText
@@ -27,9 +28,15 @@ from email.header import Header
 from enum import Enum
 
 import requests
+try:
+    import discord
+    discord_available = True
+except ImportError:
+    discord_available = False
 
-from config import get_config
-from analyzer import AnalysisResult
+from src.config import get_config
+from src.analyzer import AnalysisResult
+from bot.models import BotMessage
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +48,9 @@ class NotificationChannel(Enum):
     TELEGRAM = "telegram"  # Telegram
     EMAIL = "email"        # 邮件
     PUSHOVER = "pushover"  # Pushover（手机/桌面推送）
+    PUSHPLUS = "pushplus"  # PushPlus（国内推送服务）
     CUSTOM = "custom"      # 自定义 Webhook
+    DISCORD = "discord"    # Discord 机器人 (Bot)
     UNKNOWN = "unknown"    # 未知
 
 
@@ -86,7 +95,9 @@ class ChannelDetector:
             NotificationChannel.TELEGRAM: "Telegram",
             NotificationChannel.EMAIL: "邮件",
             NotificationChannel.PUSHOVER: "Pushover",
+            NotificationChannel.PUSHPLUS: "PushPlus",
             NotificationChannel.CUSTOM: "自定义Webhook",
+            NotificationChannel.DISCORD: "Discord机器人",
             NotificationChannel.UNKNOWN: "未知渠道",
         }
         return names.get(channel, "未知渠道")
@@ -111,13 +122,15 @@ class NotificationService:
     注意：所有已配置的渠道都会收到推送
     """
     
-    def __init__(self):
+    def __init__(self, source_message: Optional[BotMessage] = None):
         """
         初始化通知服务
         
         检测所有已配置的渠道，推送时会向所有渠道发送
         """
         config = get_config()
+        self._source_message = source_message
+        self._context_channels: List[str] = []
         
         # 各渠道的 Webhook URL
         self._wechat_url = config.wechat_webhook_url
@@ -141,10 +154,20 @@ class NotificationService:
             'user_key': getattr(config, 'pushover_user_key', None),
             'api_token': getattr(config, 'pushover_api_token', None),
         }
-        
+
+        # PushPlus 配置
+        self._pushplus_token = getattr(config, 'pushplus_token', None)
+
         # 自定义 Webhook 配置
         self._custom_webhook_urls = getattr(config, 'custom_webhook_urls', []) or []
         self._custom_webhook_bearer_token = getattr(config, 'custom_webhook_bearer_token', None)
+        
+        # Discord 配置
+        self._discord_config = {
+            'bot_token': getattr(config, 'discord_bot_token', None),
+            'channel_id': getattr(config, 'discord_main_channel_id', None),
+            'webhook_url': getattr(config, 'discord_webhook_url', None),
+        }
         
         # 消息长度限制（字节）
         self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
@@ -152,12 +175,15 @@ class NotificationService:
         
         # 检测所有已配置的渠道
         self._available_channels = self._detect_all_channels()
+        if self._has_context_channel():
+            self._context_channels.append("钉钉会话")
         
-        if not self._available_channels:
+        if not self._available_channels and not self._context_channels:
             logger.warning("未配置有效的通知渠道，将不发送推送通知")
         else:
             channel_names = [ChannelDetector.get_channel_name(ch) for ch in self._available_channels]
-            logger.info(f"已配置 {len(self._available_channels)} 个通知渠道：{', '.join(channel_names)}")
+            channel_names.extend(self._context_channels)
+            logger.info(f"已配置 {len(channel_names)} 个通知渠道：{', '.join(channel_names)}")
     
     def _detect_all_channels(self) -> List[NotificationChannel]:
         """
@@ -187,16 +213,31 @@ class NotificationService:
         # Pushover
         if self._is_pushover_configured():
             channels.append(NotificationChannel.PUSHOVER)
-        
+
+        # PushPlus
+        if self._pushplus_token:
+            channels.append(NotificationChannel.PUSHPLUS)
+
         # 自定义 Webhook
         if self._custom_webhook_urls:
             channels.append(NotificationChannel.CUSTOM)
+        
+        # Discord
+        if self._is_discord_configured():
+            channels.append(NotificationChannel.DISCORD)
         
         return channels
     
     def _is_telegram_configured(self) -> bool:
         """检查 Telegram 配置是否完整"""
         return bool(self._telegram_config['bot_token'] and self._telegram_config['chat_id'])
+    
+    def _is_discord_configured(self) -> bool:
+        """检查 Discord 配置是否完整（支持 Bot 或 Webhook）"""
+        # 只要配置了 Webhook 或完整的 Bot Token+Channel，即视为可用
+        bot_ok = bool(self._discord_config['bot_token'] and self._discord_config['channel_id'])
+        webhook_ok = bool(self._discord_config['webhook_url'])
+        return bot_ok or webhook_ok
     
     def _is_email_configured(self) -> bool:
         """检查邮件配置是否完整（只需邮箱和授权码）"""
@@ -207,8 +248,8 @@ class NotificationService:
         return bool(self._pushover_config['user_key'] and self._pushover_config['api_token'])
     
     def is_available(self) -> bool:
-        """检查通知服务是否可用（至少有一个渠道）"""
-        return len(self._available_channels) > 0
+        """检查通知服务是否可用（至少有一个渠道或上下文渠道）"""
+        return len(self._available_channels) > 0 or self._has_context_channel()
     
     def get_available_channels(self) -> List[NotificationChannel]:
         """获取所有已配置的渠道"""
@@ -216,29 +257,81 @@ class NotificationService:
     
     def get_channel_names(self) -> str:
         """获取所有已配置渠道的名称"""
-        return ', '.join([ChannelDetector.get_channel_name(ch) for ch in self._available_channels])
+        names = [ChannelDetector.get_channel_name(ch) for ch in self._available_channels]
+        if self._has_context_channel():
+            names.append("钉钉会话")
+        return ', '.join(names)
+
+    def _has_context_channel(self) -> bool:
+        """判断是否存在基于消息上下文的临时渠道（如钉钉会话、飞书会话）"""
+        return (
+            self._extract_dingtalk_session_webhook() is not None
+            or self._extract_feishu_reply_info() is not None
+        )
+
+    def _extract_dingtalk_session_webhook(self) -> Optional[str]:
+        """从来源消息中提取钉钉会话 Webhook（用于 Stream 模式回复）"""
+        if not isinstance(self._source_message, BotMessage):
+            return None
+        raw_data = getattr(self._source_message, "raw_data", {}) or {}
+        if not isinstance(raw_data, dict):
+            return None
+        session_webhook = (
+            raw_data.get("_session_webhook")
+            or raw_data.get("sessionWebhook")
+            or raw_data.get("session_webhook")
+            or raw_data.get("session_webhook_url")
+        )
+        if not session_webhook and isinstance(raw_data.get("headers"), dict):
+            session_webhook = raw_data["headers"].get("sessionWebhook")
+        return session_webhook
+
+    def _extract_feishu_reply_info(self) -> Optional[Dict[str, str]]:
+        """
+        从来源消息中提取飞书回复信息（用于 Stream 模式回复）
+        
+        Returns:
+            包含 chat_id 的字典，或 None
+        """
+        if not isinstance(self._source_message, BotMessage):
+            return None
+        if getattr(self._source_message, "platform", "") != "feishu":
+            return None
+        chat_id = getattr(self._source_message, "chat_id", "")
+        if not chat_id:
+            return None
+        return {"chat_id": chat_id}
+
+    def send_to_context(self, content: str) -> bool:
+        """
+        向基于消息上下文的渠道发送消息（例如钉钉 Stream 会话）
+        
+        Args:
+            content: Markdown 格式内容
+        """
+        return self._send_via_source_context(content)
     
     def generate_daily_report(
-        self, 
+        self,
         results: List[AnalysisResult],
         report_date: Optional[str] = None
     ) -> str:
         """
         生成 Markdown 格式的日报（详细版）
-        
+
         Args:
             results: 分析结果列表
             report_date: 报告日期（默认今天）
-            
+
         Returns:
             Markdown 格式的日报内容
         """
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
-        
+
         # 标题
         report_lines = [
-            f"# 📅 {report_date} A股自选股智能分析报告",
+            f"# 📅 {report_date} 股票智能分析报告",
             "",
             f"> 共分析 **{len(results)}** 只股票 | 报告生成时间：{datetime.now().strftime('%H:%M:%S')}",
             "",
@@ -262,8 +355,8 @@ class NotificationService:
         report_lines.extend([
             "## 📊 操作建议汇总",
             "",
-            f"| 指标 | 数值 |",
-            f"|------|------|",
+            "| 指标 | 数值 |",
+            "|------|------|",
             f"| 🟢 建议买入/加仓 | **{buy_count}** 只 |",
             f"| 🟡 建议持有/观望 | **{hold_count}** 只 |",
             f"| 🔴 建议减仓/卖出 | **{sell_count}** 只 |",
@@ -386,7 +479,7 @@ class NotificationService:
             
             # 数据来源说明
             if hasattr(result, 'search_performed') and result.search_performed:
-                report_lines.append(f"*🔍 已执行联网搜索*")
+                report_lines.append("*🔍 已执行联网搜索*")
             if hasattr(result, 'data_sources') and result.data_sources:
                 report_lines.append(f"*📋 数据来源：{result.data_sources}*")
             
@@ -437,42 +530,58 @@ class NotificationService:
             return ('观望', '⚪', '观望')
     
     def generate_dashboard_report(
-        self, 
+        self,
         results: List[AnalysisResult],
         report_date: Optional[str] = None
     ) -> str:
         """
         生成决策仪表盘格式的日报（详细版）
-        
+
         格式：市场概览 + 重要信息 + 核心结论 + 数据透视 + 作战计划
-        
+
         Args:
             results: 分析结果列表
             report_date: 报告日期（默认今天）
-            
+
         Returns:
             Markdown 格式的决策仪表盘日报
         """
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
-        
+
         # 按评分排序（高分在前）
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
-        
+
         # 统计信息
         buy_count = sum(1 for r in results if r.operation_advice in ['买入', '加仓', '强烈买入'])
         sell_count = sum(1 for r in results if r.operation_advice in ['卖出', '减仓', '强烈卖出'])
         hold_count = sum(1 for r in results if r.operation_advice in ['持有', '观望'])
-        
+
         report_lines = [
             f"# 🎯 {report_date} 决策仪表盘",
             "",
             f"> 共分析 **{len(results)}** 只股票 | 🟢买入:{buy_count} 🟡观望:{hold_count} 🔴卖出:{sell_count}",
             "",
-            "---",
-            "",
         ]
-        
+
+        # === 新增：分析结果摘要 (Issue #112) ===
+        if results:
+            report_lines.extend([
+                "## 📊 分析结果摘要",
+                "",
+            ])
+            for r in sorted_results:
+                emoji = r.get_emoji()
+                report_lines.append(
+                    f"{emoji} **{r.name}({r.code})**: {r.operation_advice} | "
+                    f"评分 {r.sentiment_score} | {r.trend_prediction}"
+                )
+            report_lines.extend([
+                "",
+                "---",
+                "",
+            ])
+
         # 逐个股票的决策仪表盘
         for result in sorted_results:
             signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
@@ -643,7 +752,7 @@ class NotificationService:
                     ])
                 
                 # 检查清单
-                checklist = battle.get('action_checklist', [])
+                checklist = battle.get('action_checklist', []) if battle else []
                 if checklist:
                     report_lines.extend([
                         "**✅ 检查清单**",
@@ -840,26 +949,26 @@ class NotificationService:
     def generate_wechat_summary(self, results: List[AnalysisResult]) -> str:
         """
         生成企业微信精简版日报（控制在4000字符内）
-        
+
         Args:
             results: 分析结果列表
-            
+
         Returns:
             精简版 Markdown 内容
         """
         report_date = datetime.now().strftime('%Y-%m-%d')
-        
+
         # 按评分排序
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
-        
+
         # 统计
         buy_count = sum(1 for r in results if r.operation_advice in ['买入', '加仓', '强烈买入'])
         sell_count = sum(1 for r in results if r.operation_advice in ['卖出', '减仓', '强烈卖出'])
         hold_count = sum(1 for r in results if r.operation_advice in ['持有', '观望'])
         avg_score = sum(r.sentiment_score for r in results) / len(results) if results else 0
-        
+
         lines = [
-            f"## 📅 {report_date} A股分析报告",
+            f"## 📅 {report_date} 股票分析报告",
             "",
             f"> 共 **{len(results)}** 只 | 🟢买入:{buy_count} 🟡持有:{hold_count} 🔴卖出:{sell_count} | 均分:{avg_score:.0f}",
             "",
@@ -1072,14 +1181,24 @@ class NotificationService:
             return len(s.encode('utf-8'))
         
         # 智能分割：优先按 "---" 分隔（股票之间的分隔线）
-        # 如果没有分隔线，按 "### " 标题分割（每只股票的标题）
+        # 其次尝试各级标题分割
         if "\n---\n" in content:
             sections = content.split("\n---\n")
             separator = "\n---\n"
         elif "\n### " in content:
-            # 按 ### 分割，但保留 ### 前缀
+            # 按 ### 分割
             parts = content.split("\n### ")
             sections = [parts[0]] + [f"### {p}" for p in parts[1:]]
+            separator = "\n"
+        elif "\n## " in content:
+            # 按 ## 分割 (兼容二级标题)
+            parts = content.split("\n## ")
+            sections = [parts[0]] + [f"## {p}" for p in parts[1:]]
+            separator = "\n"
+        elif "\n**" in content:
+            # 按 ** 加粗标题分割 (兼容 AI 未输出标准 Markdown 标题的情况)
+            parts = content.split("\n**")
+            sections = [parts[0]] + [f"**{p}" for p in parts[1:]]
             separator = "\n"
         else:
             # 无法智能分割，按字符强制分割
@@ -1144,11 +1263,11 @@ class NotificationService:
                     logger.error(f"企业微信第 {i+1}/{total_chunks} 批发送失败")
             except Exception as e:
                 logger.error(f"企业微信第 {i+1}/{total_chunks} 批发送异常: {e}")
-            
+
             # 批次间隔，避免触发频率限制
             if i < total_chunks - 1:
-                time.sleep(1)
-        
+                time.sleep(2.5)  # 增加到 2.5s，避免企业微信限流
+
         return success_count == total_chunks
     
     def _send_wechat_force_chunked(self, content: str, max_bytes: int) -> bool:
@@ -1599,7 +1718,7 @@ class NotificationService:
             # 生成主题
             if subject is None:
                 date_str = datetime.now().strftime('%Y-%m-%d')
-                subject = f"📈 A股智能分析报告 - {date_str}"
+                subject = f"📈 股票智能分析报告 - {date_str}"
             
             # 将 Markdown 转换为简单 HTML
             html_content = self._markdown_to_html(content)
@@ -1660,56 +1779,129 @@ class NotificationService:
     
     def _markdown_to_html(self, markdown_text: str) -> str:
         """
-        将 Markdown 转换为简单的 HTML
-        
-        支持：标题、加粗、列表、分隔线
+        将 Markdown 转换为 HTML，支持表格并优化排版
+
+        使用 markdown2 库进行转换，并添加优化的 CSS 样式
+        解决问题：
+        1. 邮件表格未渲染问题
+        2. 邮件内容排版过于松散问题
         """
-        html = markdown_text
-        
-        # 转义 HTML 特殊字符
-        html = html.replace('&', '&amp;')
-        html = html.replace('<', '&lt;')
-        html = html.replace('>', '&gt;')
-        
-        # 标题 (# ## ###)
-        html = re.sub(r'^### (.+)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
-        html = re.sub(r'^## (.+)$', r'<h2>\1</h2>', html, flags=re.MULTILINE)
-        html = re.sub(r'^# (.+)$', r'<h1>\1</h1>', html, flags=re.MULTILINE)
-        
-        # 加粗 **text**
-        html = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html)
-        
-        # 斜体 *text*
-        html = re.sub(r'\*(.+?)\*', r'<em>\1</em>', html)
-        
-        # 分隔线 ---
-        html = re.sub(r'^---$', r'<hr>', html, flags=re.MULTILINE)
-        
-        # 列表项 - item
-        html = re.sub(r'^- (.+)$', r'<li>\1</li>', html, flags=re.MULTILINE)
-        
-        # 引用 > text
-        html = re.sub(r'^&gt; (.+)$', r'<blockquote>\1</blockquote>', html, flags=re.MULTILINE)
-        
-        # 换行
-        html = html.replace('\n', '<br>\n')
-        
-        # 包装 HTML
+        # 使用 markdown2 转换，开启表格和其他扩展支持
+        html_content = markdown2.markdown(
+            markdown_text,
+            extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists"]
+        )
+
+        # 优化 CSS 样式：更紧凑的排版，美观的表格
+        css_style = """
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                line-height: 1.5;
+                color: #24292e;
+                font-size: 14px;
+                padding: 15px;
+                max-width: 900px;
+                margin: 0 auto;
+            }
+            h1 {
+                font-size: 20px;
+                border-bottom: 1px solid #eaecef;
+                padding-bottom: 0.3em;
+                margin-top: 1.2em;
+                margin-bottom: 0.8em;
+                color: #0366d6;
+            }
+            h2 {
+                font-size: 18px;
+                border-bottom: 1px solid #eaecef;
+                padding-bottom: 0.3em;
+                margin-top: 1.0em;
+                margin-bottom: 0.6em;
+            }
+            h3 {
+                font-size: 16px;
+                margin-top: 0.8em;
+                margin-bottom: 0.4em;
+            }
+            p {
+                margin-top: 0;
+                margin-bottom: 8px;
+            }
+            /* 表格样式优化 */
+            table {
+                border-collapse: collapse;
+                width: 100%;
+                margin: 12px 0;
+                display: block;
+                overflow-x: auto;
+                font-size: 13px;
+            }
+            th, td {
+                border: 1px solid #dfe2e5;
+                padding: 6px 10px;
+                text-align: left;
+            }
+            th {
+                background-color: #f6f8fa;
+                font-weight: 600;
+            }
+            tr:nth-child(2n) {
+                background-color: #f8f8f8;
+            }
+            tr:hover {
+                background-color: #f1f8ff;
+            }
+            /* 引用块样式 */
+            blockquote {
+                color: #6a737d;
+                border-left: 0.25em solid #dfe2e5;
+                padding: 0 1em;
+                margin: 0 0 10px 0;
+            }
+            /* 代码块样式 */
+            code {
+                padding: 0.2em 0.4em;
+                margin: 0;
+                font-size: 85%;
+                background-color: rgba(27,31,35,0.05);
+                border-radius: 3px;
+                font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+            }
+            pre {
+                padding: 12px;
+                overflow: auto;
+                line-height: 1.45;
+                background-color: #f6f8fa;
+                border-radius: 3px;
+                margin-bottom: 10px;
+            }
+            hr {
+                height: 0.25em;
+                padding: 0;
+                margin: 16px 0;
+                background-color: #e1e4e8;
+                border: 0;
+            }
+            ul, ol {
+                padding-left: 20px;
+                margin-bottom: 10px;
+            }
+            li {
+                margin: 2px 0;
+            }
+        """
+
         return f"""
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="utf-8">
             <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; }}
-                h1, h2, h3 {{ color: #333; }}
-                hr {{ border: none; border-top: 1px solid #ddd; margin: 20px 0; }}
-                blockquote {{ border-left: 4px solid #ddd; padding-left: 16px; color: #666; }}
-                li {{ margin: 4px 0; }}
+                {css_style}
             </style>
         </head>
         <body>
-            {html}
+            {html_content}
         </body>
         </html>
         """
@@ -2301,6 +2493,308 @@ class NotificationService:
             "message": content,
             "body": content
         }
+
+    def _send_via_source_context(self, content: str) -> bool:
+        """
+        使用消息上下文（如钉钉/飞书会话）发送一份报告
+        
+        主要用于从机器人 Stream 模式触发的任务，确保结果能回到触发的会话。
+        """
+        success = False
+        
+        # 尝试钉钉会话
+        session_webhook = self._extract_dingtalk_session_webhook()
+        if session_webhook:
+            try:
+                if self._send_dingtalk_chunked(session_webhook, content, max_bytes=20000):
+                    logger.info("已通过钉钉会话（Stream）推送报告")
+                    success = True
+                else:
+                    logger.error("钉钉会话（Stream）推送失败")
+            except Exception as e:
+                logger.error(f"钉钉会话（Stream）推送异常: {e}")
+
+        # 尝试飞书会话
+        feishu_info = self._extract_feishu_reply_info()
+        if feishu_info:
+            try:
+                if self._send_feishu_stream_reply(feishu_info["chat_id"], content):
+                    logger.info("已通过飞书会话（Stream）推送报告")
+                    success = True
+                else:
+                    logger.error("飞书会话（Stream）推送失败")
+            except Exception as e:
+                logger.error(f"飞书会话（Stream）推送异常: {e}")
+
+        return success
+
+    def _send_feishu_stream_reply(self, chat_id: str, content: str) -> bool:
+        """
+        通过飞书 Stream 模式发送消息到指定会话
+        
+        Args:
+            chat_id: 飞书会话 ID
+            content: 消息内容
+            
+        Returns:
+            是否发送成功
+        """
+        try:
+            from bot.platforms.feishu_stream import FeishuReplyClient, FEISHU_SDK_AVAILABLE
+            if not FEISHU_SDK_AVAILABLE:
+                logger.warning("飞书 SDK 不可用，无法发送 Stream 回复")
+                return False
+            
+            from src.config import get_config
+            config = get_config()
+            
+            app_id = getattr(config, 'feishu_app_id', None)
+            app_secret = getattr(config, 'feishu_app_secret', None)
+            
+            if not app_id or not app_secret:
+                logger.warning("飞书 APP_ID 或 APP_SECRET 未配置")
+                return False
+            
+            # 创建回复客户端
+            reply_client = FeishuReplyClient(app_id, app_secret)
+            
+            # 飞书文本消息有长度限制，需要分批发送
+            max_bytes = getattr(config, 'feishu_max_bytes', 20000)
+            content_bytes = len(content.encode('utf-8'))
+            
+            if content_bytes > max_bytes:
+                return self._send_feishu_stream_chunked(reply_client, chat_id, content, max_bytes)
+            
+            return reply_client.send_to_chat(chat_id, content)
+            
+        except ImportError as e:
+            logger.error(f"导入飞书 Stream 模块失败: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"飞书 Stream 回复异常: {e}")
+            return False
+
+    def _send_feishu_stream_chunked(
+        self, 
+        reply_client, 
+        chat_id: str, 
+        content: str, 
+        max_bytes: int
+    ) -> bool:
+        """
+        分批发送长消息到飞书（Stream 模式）
+        
+        Args:
+            reply_client: FeishuReplyClient 实例
+            chat_id: 飞书会话 ID
+            content: 完整消息内容
+            max_bytes: 单条消息最大字节数
+            
+        Returns:
+            是否全部发送成功
+        """
+        import time
+        
+        def get_bytes(s: str) -> int:
+            return len(s.encode('utf-8'))
+        
+        # 按段落或分隔线分割
+        if "\n---\n" in content:
+            sections = content.split("\n---\n")
+            separator = "\n---\n"
+        elif "\n### " in content:
+            parts = content.split("\n### ")
+            sections = [parts[0]] + [f"### {p}" for p in parts[1:]]
+            separator = "\n"
+        else:
+            # 按行分割
+            sections = content.split("\n")
+            separator = "\n"
+        
+        chunks = []
+        current_chunk = []
+        current_bytes = 0
+        separator_bytes = get_bytes(separator)
+        
+        for section in sections:
+            section_bytes = get_bytes(section) + separator_bytes
+            
+            if current_bytes + section_bytes > max_bytes:
+                if current_chunk:
+                    chunks.append(separator.join(current_chunk))
+                current_chunk = [section]
+                current_bytes = section_bytes
+            else:
+                current_chunk.append(section)
+                current_bytes += section_bytes
+        
+        if current_chunk:
+            chunks.append(separator.join(current_chunk))
+        
+        # 发送每个分块
+        success = True
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                time.sleep(0.5)  # 避免请求过快
+            
+            if not reply_client.send_to_chat(chat_id, chunk):
+                success = False
+                logger.error(f"飞书 Stream 分块 {i+1}/{len(chunks)} 发送失败")
+        
+        return success
+    
+    def send_to_pushplus(self, content: str, title: Optional[str] = None) -> bool:
+        """
+        推送消息到 PushPlus
+
+        PushPlus API 格式：
+        POST http://www.pushplus.plus/send
+        {
+            "token": "用户令牌",
+            "title": "消息标题",
+            "content": "消息内容",
+            "template": "html/txt/json/markdown"
+        }
+
+        PushPlus 特点：
+        - 国内推送服务，免费额度充足
+        - 支持微信公众号推送
+        - 支持多种消息格式
+
+        Args:
+            content: 消息内容（Markdown 格式）
+            title: 消息标题（可选）
+
+        Returns:
+            是否发送成功
+        """
+        if not self._pushplus_token:
+            logger.warning("PushPlus Token 未配置，跳过推送")
+            return False
+
+        # PushPlus API 端点
+        api_url = "http://www.pushplus.plus/send"
+
+        # 处理消息标题
+        if title is None:
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            title = f"📈 股票分析报告 - {date_str}"
+
+        try:
+            payload = {
+                "token": self._pushplus_token,
+                "title": title,
+                "content": content,
+                "template": "markdown"  # 使用 Markdown 格式
+            }
+
+            response = requests.post(api_url, json=payload, timeout=10)
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 200:
+                    logger.info("PushPlus 消息发送成功")
+                    return True
+                else:
+                    error_msg = result.get('msg', '未知错误')
+                    logger.error(f"PushPlus 返回错误: {error_msg}")
+                    return False
+            else:
+                logger.error(f"PushPlus 请求失败: HTTP {response.status_code}")
+                return False
+
+        except Exception as e:
+            logger.error(f"发送 PushPlus 消息失败: {e}")
+            return False
+
+    def send_to_discord(self, content: str) -> bool:
+        """
+        推送消息到 Discord（支持 Webhook 和 Bot API）
+        
+        Args:
+            content: Markdown 格式的消息内容
+            
+        Returns:
+            是否发送成功
+        """
+        # 优先使用 Webhook（配置简单，权限低）
+        if self._discord_config['webhook_url']:
+            return self._send_discord_webhook(content)
+        
+        # 其次使用 Bot API（权限高，需要 channel_id）
+        if self._discord_config['bot_token'] and self._discord_config['channel_id']:
+            return self._send_discord_bot(content)
+        
+        logger.warning("Discord 配置不完整，跳过推送")
+        return False
+    
+    def _send_discord_webhook(self, content: str) -> bool:
+        """
+        使用 Webhook 发送消息到 Discord
+        
+        Discord Webhook 支持 Markdown 格式
+        
+        Args:
+            content: Markdown 格式的消息内容
+            
+        Returns:
+            是否发送成功
+        """
+        try:
+            payload = {
+                'content': content,
+                'username': 'A股分析机器人',
+                'avatar_url': 'https://picsum.photos/200'
+            }
+            
+            response = requests.post(
+                self._discord_config['webhook_url'],
+                json=payload,
+                timeout=10
+            )
+            
+            if response.status_code in [200, 204]:
+                logger.info("Discord Webhook 消息发送成功")
+                return True
+            else:
+                logger.error(f"Discord Webhook 发送失败: {response.status_code} {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Discord Webhook 发送异常: {e}")
+            return False
+    
+    def _send_discord_bot(self, content: str) -> bool:
+        """
+        使用 Bot API 发送消息到 Discord
+        
+        Args:
+            content: Markdown 格式的消息内容
+            
+        Returns:
+            是否发送成功
+        """
+        try:
+            headers = {
+                'Authorization': f'Bot {self._discord_config["bot_token"]}',
+                'Content-Type': 'application/json'
+            }
+            
+            payload = {
+                'content': content
+            }
+            
+            url = f'https://discord.com/api/v10/channels/{self._discord_config["channel_id"]}/messages'
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info("Discord Bot 消息发送成功")
+                return True
+            else:
+                logger.error(f"Discord Bot 发送失败: {response.status_code} {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Discord Bot 发送异常: {e}")
+            return False
     
     def send(self, content: str) -> bool:
         """
@@ -2314,7 +2808,12 @@ class NotificationService:
         Returns:
             是否至少有一个渠道发送成功
         """
-        if not self.is_available():
+        context_success = self.send_to_context(content)
+
+        if not self._available_channels:
+            if context_success:
+                logger.info("已通过消息上下文渠道完成推送（无其他通知渠道）")
+                return True
             logger.warning("通知服务不可用，跳过推送")
             return False
         
@@ -2337,8 +2836,12 @@ class NotificationService:
                     result = self.send_to_email(content)
                 elif channel == NotificationChannel.PUSHOVER:
                     result = self.send_to_pushover(content)
+                elif channel == NotificationChannel.PUSHPLUS:
+                    result = self.send_to_pushplus(content)
                 elif channel == NotificationChannel.CUSTOM:
                     result = self.send_to_custom(content)
+                elif channel == NotificationChannel.DISCORD:
+                    result = self.send_to_discord(content)
                 else:
                     logger.warning(f"不支持的通知渠道: {channel}")
                     result = False
@@ -2353,7 +2856,7 @@ class NotificationService:
                 fail_count += 1
         
         logger.info(f"通知发送完成：成功 {success_count} 个，失败 {fail_count} 个")
-        return success_count > 0
+        return success_count > 0 or context_success
     
     def _send_chunked_messages(self, content: str, max_length: int) -> bool:
         """
@@ -2544,7 +3047,7 @@ if __name__ == "__main__":
     service = NotificationService()
     
     # 显示检测到的渠道
-    print(f"=== 通知渠道检测 ===")
+    print("=== 通知渠道检测 ===")
     print(f"当前渠道: {service.get_channel_names()}")
     print(f"渠道列表: {service.get_available_channels()}")
     print(f"服务可用: {service.is_available()}")

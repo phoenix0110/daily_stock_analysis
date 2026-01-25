@@ -34,7 +34,7 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
-from config import get_config
+from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +53,25 @@ class TushareFetcher(BaseFetcher):
     """
     
     name = "TushareFetcher"
-    priority = 2
-    
-    def __init__(self):
-        """初始化 TushareFetcher"""
+    priority = 2  # 默认优先级，会在 __init__ 中根据配置动态调整
+
+    def __init__(self, rate_limit_per_minute: int = 80):
+        """
+        初始化 TushareFetcher
+
+        Args:
+            rate_limit_per_minute: 每分钟最大请求数（默认80，Tushare免费配额）
+        """
+        self.rate_limit_per_minute = rate_limit_per_minute
+        self._call_count = 0  # 当前分钟内的调用次数
+        self._minute_start: Optional[float] = None  # 当前计数周期开始时间
         self._api: Optional[object] = None  # Tushare API 实例
-        
+
         # 尝试初始化 API
         self._init_api()
+
+        # 根据 API 初始化结果动态调整优先级
+        self.priority = self._determine_priority()
     
     def _init_api(self) -> None:
         """
@@ -103,6 +114,69 @@ class TushareFetcher(BaseFetcher):
         except Exception as e:
             logger.error(f"Tushare API 初始化失败: {e}")
             self._api = None
+
+    def _determine_priority(self) -> int:
+        """
+        根据 Token 配置和 API 初始化状态确定优先级
+
+        策略：
+        - Token 配置且 API 初始化成功：优先级 0（最高）
+        - 其他情况：优先级 2（默认）
+
+        Returns:
+            优先级数字（0=最高，数字越大优先级越低）
+        """
+        config = get_config()
+
+        if config.tushare_token and self._api is not None:
+            # Token 配置且 API 初始化成功，提升为最高优先级
+            logger.info("✅ 检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升为最高 (Priority 0)")
+            return 0
+
+        # Token 未配置或 API 初始化失败，保持默认优先级
+        return 2
+
+    def _check_rate_limit(self) -> None:
+        """
+        检查并执行速率限制
+        
+        流控策略：
+        1. 检查是否进入新的一分钟
+        2. 如果是，重置计数器
+        3. 如果当前分钟调用次数超过限制，强制休眠
+        """
+        current_time = time.time()
+        
+        # 检查是否需要重置计数器（新的一分钟）
+        if self._minute_start is None:
+            self._minute_start = current_time
+            self._call_count = 0
+        elif current_time - self._minute_start >= 60:
+            # 已经过了一分钟，重置计数器
+            self._minute_start = current_time
+            self._call_count = 0
+            logger.debug("速率限制计数器已重置")
+        
+        # 检查是否超过配额
+        if self._call_count >= self.rate_limit_per_minute:
+            # 计算需要等待的时间（到下一分钟）
+            elapsed = current_time - self._minute_start
+            sleep_time = max(0, 60 - elapsed) + 1  # +1 秒缓冲
+            
+            logger.warning(
+                f"Tushare 达到速率限制 ({self._call_count}/{self.rate_limit_per_minute} 次/分钟)，"
+                f"等待 {sleep_time:.1f} 秒..."
+            )
+            
+            time.sleep(sleep_time)
+            
+            # 重置计数器
+            self._minute_start = time.time()
+            self._call_count = 0
+        
+        # 增加调用计数
+        self._call_count += 1
+        logger.debug(f"Tushare 当前分钟调用次数: {self._call_count}/{self.rate_limit_per_minute}")
     
     def _convert_stock_code(self, stock_code: str) -> str:
         """

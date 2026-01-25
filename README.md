@@ -1,4 +1,4 @@
-# 📈 A股智能分析系统
+# 📈 股票智能分析系统
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/daily_stock_analysis?style=social)](https://github.com/ZhuLinsen/daily_stock_analysis/stargazers)
 [![CI](https://github.com/ZhuLinsen/daily_stock_analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/daily_stock_analysis/actions/workflows/ci.yml)
@@ -6,7 +6,9 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Ready-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
 
-> 🤖 基于 AI 大模型的 A/H 股自选股智能分析系统，每日自动分析并推送「决策仪表盘」到企业微信/飞书/Telegram/邮箱
+> 🤖 基于 AI 大模型的 A股/港股/美股自选股智能分析系统，每日自动分析并推送「决策仪表盘」到企业微信/飞书/Telegram/邮箱
+
+[English](docs/README_EN.md) | 简体中文
 
 ![运行效果演示](./sources/all_2026-01-13_221547.gif)
 
@@ -75,9 +77,12 @@
 | `EMAIL_SENDER` | 发件人邮箱（如 `xxx@qq.com`） | 可选 |
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（多个用逗号分隔，留空则发给自己） | 可选 |
+| `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook 的 Bearer Token（用于需要认证的 Webhook） | 可选 |
 | `SINGLE_STOCK_NOTIFY` | 单股推送模式：设为 `true` 则每分析完一只股票立即推送 | 可选 |
+| `REPORT_TYPE` | 报告类型：`simple`(精简) 或 `full`(完整)，Docker环境推荐设为 `full` | 可选 |
+| `ANALYSIS_DELAY` | 个股分析和大盘分析之间的延迟（秒），避免API限流，如 `10` | 可选 |
 
 > *注：至少配置一个渠道，配置多个则同时推送
 >
@@ -87,7 +92,7 @@
 
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
-| `STOCK_LIST` | 自选股代码，如 `600519,300750,002594` | ✅ |
+| `STOCK_LIST` | 自选股代码，如 `600519,hk00700,AAPL,TSLA` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 推荐 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/) 备用搜索 | 可选 |
@@ -188,28 +193,23 @@
 ```
 daily_stock_analysis/
 ├── main.py              # 主程序入口
-├── analyzer.py          # AI 分析器（Gemini）
-├── market_analyzer.py   # 大盘复盘分析
-├── search_service.py    # 新闻搜索服务
-├── notification.py      # 消息推送
-├── scheduler.py         # 定时任务
-├── storage.py           # 数据存储
-├── config.py            # 配置管理
 ├── webui.py             # WebUI 入口
-├── data_provider/       # 数据源适配器
-│   ├── akshare_fetcher.py
-│   ├── tushare_fetcher.py
-│   ├── baostock_fetcher.py
-│   └── yfinance_fetcher.py
+├── src/                 # 核心业务代码
+│   ├── analyzer.py      # AI 分析器（Gemini）
+│   ├── config.py        # 配置管理
+│   ├── notification.py  # 消息推送
+│   ├── storage.py       # 数据存储
+│   └── ...
+├── bot/                 # 机器人模块
 ├── web/                 # WebUI 模块
-│   ├── server.py        # HTTP 服务器
-│   ├── router.py        # 路由管理
-│   ├── handlers.py      # 请求处理器
-│   ├── services.py      # 业务服务
-│   └── templates.py     # HTML 模板
-├── .github/workflows/   # GitHub Actions
-├── Dockerfile           # Docker 镜像
-└── docker-compose.yml   # Docker 编排
+├── data_provider/       # 数据源适配器
+├── docker/              # Docker 配置
+│   ├── Dockerfile
+│   └── docker-compose.yml
+├── docs/                # 项目文档
+│   ├── full-guide.md    # 完整配置指南
+│   └── ...
+└── .github/workflows/   # GitHub Actions
 ```
 
 ## 🗺️ Roadmap
@@ -223,7 +223,7 @@ daily_stock_analysis/
 - [x] 邮件通知（SMTP）
 - [x] 自定义 Webhook（支持钉钉、Discord、Slack、Bark 等）
 - [x] iOS/Android 推送（Pushover）
-
+- [x] 钉钉机器人 （已支持命令交互 >> [相关配置](docs/bot/dingding-bot-config.md)）
 ### 🤖 AI 模型支持
 - [x] Google Gemini（主力，免费额度）
 - [x] HiAPI 三方代理（国内友好，支持 Gemini 2.5 Pro）
@@ -243,14 +243,14 @@ daily_stock_analysis/
 - [x] GitHub Actions
 - [x] 港股支持
 - [x] Web 管理界面 (简易版)
+- [x] 美股支持
 - [ ] 历史分析回测
-- [ ] 美股支持
 
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
 
-详见 [贡献指南](CONTRIBUTING.md)
+详见 [贡献指南](docs/CONTRIBUTING.md)
 
 ## 📄 License
 [MIT License](LICENSE) © 2026 ZhuLinsen
