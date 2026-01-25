@@ -18,6 +18,7 @@ from src.notification import NotificationService
 from src.market_analyzer import MarketAnalyzer
 from src.search_service import SearchService
 from src.analyzer import GeminiAnalyzer
+from data_provider.tushare_fetcher import TushareFetcher
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,8 @@ logger = logging.getLogger(__name__)
 def run_market_review(
     notifier: NotificationService, 
     analyzer: Optional[GeminiAnalyzer] = None, 
-    search_service: Optional[SearchService] = None
+    search_service: Optional[SearchService] = None,
+    tushare_fetcher: Optional[TushareFetcher] = None
 ) -> Optional[str]:
     """
     执行大盘复盘分析
@@ -35,6 +37,7 @@ def run_market_review(
         notifier: 通知服务
         analyzer: AI分析器（可选）
         search_service: 搜索服务（可选）
+        tushare_fetcher: Tushare数据源（可选，用于备选获取大盘数据）
     
     Returns:
         复盘报告文本
@@ -44,7 +47,8 @@ def run_market_review(
     try:
         market_analyzer = MarketAnalyzer(
             search_service=search_service,
-            analyzer=analyzer
+            analyzer=analyzer,
+            tushare_fetcher=tushare_fetcher
         )
         
         # 执行复盘
