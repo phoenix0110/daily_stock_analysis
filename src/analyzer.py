@@ -660,7 +660,7 @@ class GeminiAnalyzer:
                     logger.info(f"[{api_name}] 第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
                     time.sleep(delay)
                 
-response = client.chat.completions.create(
+                response = client.chat.completions.create(
                     model=self._current_model_name,
                     messages=[
                         {"role": "system", "content": self.SYSTEM_PROMPT},
