@@ -202,24 +202,24 @@ cp .env.example .env
 vim .env  # 填入 API Key 和配置
 
 # 3. 启动容器
-docker-compose up -d webui      # WebUI 模式（推荐）
-docker-compose up -d analyzer   # 定时任务模式
-docker-compose up -d            # 同时启动两种模式
+docker-compose -f ./docker/docker-compose.yml up -d webui      # WebUI 模式（推荐）
+docker-compose -f ./docker/docker-compose.yml up -d analyzer   # 定时任务模式
+docker-compose -f ./docker/docker-compose.yml up -d            # 同时启动两种模式
 
 # 4. 访问 WebUI
 # http://localhost:8000
 
 # 5. 查看日志
-docker-compose logs -f webui
+docker-compose -f ./docker/docker-compose.yml logs -f webui
 ```
 
 ### 运行模式说明
 
 | 命令 | 说明 | 端口 |
 |------|------|------|
-| `docker-compose up -d webui` | WebUI 模式，手动触发分析 | 8000 |
-| `docker-compose up -d analyzer` | 定时任务模式，每日自动执行 | - |
-| `docker-compose up -d` | 同时启动两种模式 | 8000 |
+| `docker-compose -f ./docker/docker-compose.yml up -d webui` | WebUI 模式，手动触发分析 | 8000 |
+| `docker-compose -f ./docker/docker-compose.yml up -d analyzer` | 定时任务模式，每日自动执行 | - |
+| `docker-compose -f ./docker/docker-compose.yml up -d` | 同时启动两种模式 | 8000 |
 
 ### Docker Compose 配置
 
@@ -260,17 +260,17 @@ services:
 
 ```bash
 # 查看运行状态
-docker-compose ps
+docker-compose -f ./docker/docker-compose.yml ps
 
 # 查看日志
-docker-compose logs -f webui
+docker-compose -f ./docker/docker-compose.yml logs -f webui
 
 # 停止服务
-docker-compose down
+docker-compose -f ./docker/docker-compose.yml down
 
 # 重建镜像（代码更新后）
-docker-compose build --no-cache
-docker-compose up -d webui
+docker-compose -f ./docker/docker-compose.yml build --no-cache
+docker-compose -f ./docker/docker-compose.yml up -d webui
 ```
 
 ### 手动构建镜像
