@@ -505,8 +505,8 @@ class TushareFetcher(BaseFetcher):
         """
         获取市场每日涨跌统计
         
-        使用 daily_basic 接口获取每日指标，统计涨跌家数
-        文档：https://tushare.pro/document/2?doc_id=32
+        使用 daily 接口获取涨跌幅（pct_chg 在 daily 接口中，不在 daily_basic 中）
+        文档：https://tushare.pro/document/2?doc_id=27
         
         Args:
             trade_date: 交易日期，格式 YYYYMMDD
@@ -524,12 +524,12 @@ class TushareFetcher(BaseFetcher):
             trade_date = trade_date.replace('-', '')
         
         try:
-            logger.info(f"[Tushare] 调用 daily_basic 获取 {trade_date} 市场统计...")
+            logger.info(f"[Tushare] 调用 daily 获取 {trade_date} 市场统计...")
             
-            # 获取每日指标（包含涨跌幅）
-            df = self._api.daily_basic(
+            # 使用 daily 接口获取涨跌幅（pct_chg 字段在 daily 中，不在 daily_basic 中）
+            df = self._api.daily(
                 trade_date=trade_date,
-                fields='ts_code,close,pct_chg,turnover_rate,total_mv,circ_mv'
+                fields='ts_code,close,pct_chg,amount'
             )
             
             if df is None or df.empty:
@@ -547,13 +547,18 @@ class TushareFetcher(BaseFetcher):
                 
                 if cal_df is not None and not cal_df.empty:
                     last_trade_date = cal_df.iloc[-1]['cal_date']
-                    df = self._api.daily_basic(
+                    df = self._api.daily(
                         trade_date=last_trade_date,
-                        fields='ts_code,close,pct_chg,turnover_rate,total_mv,circ_mv'
+                        fields='ts_code,close,pct_chg,amount'
                     )
             
             if df is None or df.empty:
-                logger.warning("[Tushare] daily_basic 返回空数据")
+                logger.warning("[Tushare] daily 返回空数据")
+                return {}
+            
+            # 检查 pct_chg 列是否存在
+            if 'pct_chg' not in df.columns:
+                logger.warning(f"[Tushare] daily 返回的数据中没有 pct_chg 列，实际列: {list(df.columns)}")
                 return {}
             
             # 统计涨跌
@@ -567,9 +572,9 @@ class TushareFetcher(BaseFetcher):
             limit_up = len(df[df['pct_chg'] >= 9.9])
             limit_down = len(df[df['pct_chg'] <= -9.9])
             
-            # 总市值（亿元）
-            df['total_mv'] = pd.to_numeric(df['total_mv'], errors='coerce')
-            total_mv = df['total_mv'].sum() / 1e8 if 'total_mv' in df.columns else 0
+            # 成交额（千元 -> 亿元）
+            df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+            total_amount = df['amount'].sum() / 1e5 if 'amount' in df.columns else 0
             
             result = {
                 'trade_date': trade_date,
@@ -579,11 +584,11 @@ class TushareFetcher(BaseFetcher):
                 'limit_up_count': limit_up,
                 'limit_down_count': limit_down,
                 'total_count': len(df),
-                'total_mv': total_mv,
+                'total_amount': total_amount,  # 成交额（亿元）
             }
             
             logger.info(f"[Tushare] 市场统计: 涨:{up_count} 跌:{down_count} 平:{flat_count} "
-                       f"涨停:{limit_up} 跌停:{limit_down}")
+                       f"涨停:{limit_up} 跌停:{limit_down} 成交额:{total_amount:.0f}亿")
             
             return result
             
