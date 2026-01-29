@@ -303,75 +303,115 @@ class TushareFetcher(BaseFetcher):
         
         return df
 
-    # ==================== 扩展功能：股票名称 ====================
-    
-    def get_all_stock_names(self) -> Dict[str, str]:
-        """
-        获取所有A股股票名称映射
-        
-        使用 stock_basic 接口获取所有上市股票的代码和名称
-        文档：https://tushare.pro/document/2?doc_id=25
-        
-        Returns:
-            Dict[str, str]: {股票代码: 股票名称} 映射，如 {'000001': '平安银行'}
-        """
-        if self._api is None:
-            logger.warning("Tushare API 未初始化，无法获取股票名称")
-            return {}
-        
-        try:
-            logger.info("[Tushare] 调用 stock_basic 获取所有股票名称...")
-            
-            # 获取所有上市股票（L=上市）
-            df = self._api.stock_basic(
-                exchange='',
-                list_status='L',
-                fields='ts_code,symbol,name,industry'
-            )
-            
-            if df is None or df.empty:
-                logger.warning("[Tushare] stock_basic 返回空数据")
-                return {}
-            
-            # 构建映射：symbol (6位代码) -> name
-            stock_map = {row['symbol']: row['name'] for _, row in df.iterrows()}
-            
-            logger.info(f"[Tushare] 成功获取 {len(stock_map)} 只股票的名称")
-            return stock_map
-            
-        except Exception as e:
-            logger.error(f"[Tushare] 获取股票名称失败: {e}")
-            return {}
+    # ==================== 扩展功能：股票名称（带缓存） ====================
     
     def get_stock_name(self, stock_code: str) -> Optional[str]:
         """
-        获取单只股票的名称
+        获取股票名称
+        
+        使用 Tushare 的 stock_basic 接口获取股票基本信息
         
         Args:
-            stock_code: 股票代码（6位数字）
+            stock_code: 股票代码
             
         Returns:
-            股票名称，获取失败返回 None
+            股票名称，失败返回 None
         """
         if self._api is None:
+            logger.warning("Tushare API 未初始化，无法获取股票名称")
             return None
         
+        # 检查缓存
+        if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
+            return self._stock_name_cache[stock_code]
+        
+        # 初始化缓存
+        if not hasattr(self, '_stock_name_cache'):
+            self._stock_name_cache = {}
+        
         try:
+            # 速率限制检查
+            self._check_rate_limit()
+            
+            # 转换代码格式
             ts_code = self._convert_stock_code(stock_code)
             
+            # 调用 stock_basic 接口
             df = self._api.stock_basic(
                 ts_code=ts_code,
-                fields='ts_code,symbol,name'
+                fields='ts_code,name'
             )
             
             if df is not None and not df.empty:
-                return df.iloc[0]['name']
-            
-            return None
+                name = df.iloc[0]['name']
+                self._stock_name_cache[stock_code] = name
+                logger.debug(f"Tushare 获取股票名称成功: {stock_code} -> {name}")
+                return name
             
         except Exception as e:
-            logger.error(f"[Tushare] 获取 {stock_code} 名称失败: {e}")
+            logger.warning(f"Tushare 获取股票名称失败 {stock_code}: {e}")
+        
+        return None
+    
+    def get_stock_list(self) -> Optional[pd.DataFrame]:
+        """
+        获取股票列表
+        
+        使用 Tushare 的 stock_basic 接口获取全部股票列表
+        
+        Returns:
+            包含 code, name 列的 DataFrame，失败返回 None
+        """
+        if self._api is None:
+            logger.warning("Tushare API 未初始化，无法获取股票列表")
             return None
+        
+        try:
+            # 速率限制检查
+            self._check_rate_limit()
+            
+            # 调用 stock_basic 接口获取所有股票
+            df = self._api.stock_basic(
+                exchange='',
+                list_status='L',
+                fields='ts_code,name,industry,area,market'
+            )
+            
+            if df is not None and not df.empty:
+                # 转换 ts_code 为标准代码格式
+                df['code'] = df['ts_code'].apply(lambda x: x.split('.')[0])
+                
+                # 更新缓存
+                if not hasattr(self, '_stock_name_cache'):
+                    self._stock_name_cache = {}
+                for _, row in df.iterrows():
+                    self._stock_name_cache[row['code']] = row['name']
+                
+                logger.info(f"Tushare 获取股票列表成功: {len(df)} 条")
+                return df[['code', 'name', 'industry', 'area', 'market']]
+            
+        except Exception as e:
+            logger.warning(f"Tushare 获取股票列表失败: {e}")
+        
+        return None
+    
+    def get_realtime_quote(self, stock_code: str) -> Optional[dict]:
+        """
+        获取实时行情（Tushare Pro 需要较高积分才能使用实时接口）
+        
+        注意：Tushare 实时行情接口需要较高积分（>=2000），
+        普通用户建议使用其他数据源的实时行情。
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            实时行情数据字典，失败返回 None
+        """
+        # Tushare 实时行情需要高积分，普通用户无法使用
+        # 这里仅作为接口预留，实际应使用 efinance 或 akshare 的实时数据
+        logger.debug(f"Tushare 实时行情接口需要高积分，建议使用其他数据源: {stock_code}")
+        return None
 
     # ==================== 扩展功能：大盘指数 ====================
     
@@ -564,8 +604,14 @@ if __name__ == "__main__":
     fetcher = TushareFetcher()
     
     try:
+        # 测试历史数据
         df = fetcher.get_daily_data('600519')  # 茅台
         print(f"获取成功，共 {len(df)} 条数据")
         print(df.tail())
+        
+        # 测试股票名称
+        name = fetcher.get_stock_name('600519')
+        print(f"股票名称: {name}")
+        
     except Exception as e:
         print(f"获取失败: {e}")

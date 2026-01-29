@@ -218,11 +218,11 @@ class StockAnalysisPipeline:
             if self.search_service.is_available:
                 logger.info(f"[{code}] 开始多维度情报搜索...")
                 
-                # 使用多维度搜索（最多3次搜索）
+                # 使用多维度搜索（最多5次搜索）
                 intel_results = self.search_service.search_comprehensive_intel(
                     stock_code=code,
                     stock_name=stock_name,
-                    max_searches=3
+                    max_searches=5
                 )
                 
                 # 格式化情报报告
@@ -603,6 +603,12 @@ class StockAnalysisPipeline:
                         non_wechat_success = self.notifier.send_to_email(report) or non_wechat_success
                     elif channel == NotificationChannel.CUSTOM:
                         non_wechat_success = self.notifier.send_to_custom(report) or non_wechat_success
+                    elif channel == NotificationChannel.PUSHPLUS:
+                        non_wechat_success = self.notifier.send_to_pushplus(report) or non_wechat_success
+                    elif channel == NotificationChannel.DISCORD:
+                        non_wechat_success = self.notifier.send_to_discord(report) or non_wechat_success
+                    elif channel == NotificationChannel.PUSHOVER:
+                        non_wechat_success = self.notifier.send_to_pushover(report) or non_wechat_success
                     else:
                         logger.warning(f"未知通知渠道: {channel}")
 
