@@ -16,12 +16,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-import akshare as ak
 import pandas as pd
 
 from src.config import get_config
 from data_provider.tushare_fetcher import TushareFetcher
 from src.search_service import SearchService
+from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
-    north_flow: float = 0.0             # 北向资金净流入（亿元）
+    # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
@@ -106,7 +106,7 @@ class MarketAnalyzer:
     ):
         """
         初始化大盘分析器
-        
+
         Args:
             search_service: 搜索服务实例
             analyzer: AI分析器实例（用于调用LLM）
@@ -115,6 +115,7 @@ class MarketAnalyzer:
         self.config = get_config()
         self.search_service = search_service
         self.analyzer = analyzer
+        self.data_manager = DataFetcherManager()
         # Tushare 数据源（根据 priority 决定是否优先使用）
         self.tushare_fetcher = tushare_fetcher or TushareFetcher()
         
@@ -150,18 +151,6 @@ class MarketAnalyzer:
         
         return overview
 
-    def _call_akshare_with_retry(self, fn, name: str, attempts: int = 2):
-        last_error: Optional[Exception] = None
-        for attempt in range(1, attempts + 1):
-            try:
-                return fn()
-            except Exception as e:
-                last_error = e
-                logger.warning(f"[大盘] {name} 获取失败 (attempt {attempt}/{attempts}): {e}")
-                if attempt < attempts:
-                    time.sleep(min(2 ** attempt, 5))
-        logger.error(f"[大盘] {name} 最终失败: {last_error}")
-        return None
     
     def _get_main_indices(self) -> List[MarketIndex]:
         """
@@ -203,7 +192,7 @@ class MarketAnalyzer:
             指数列表
         """
         indices = []
-        
+
         try:
             # 使用 akshare 获取指数行情（新浪财经接口，包含深市指数）
             df = self._call_akshare_with_retry(ak.stock_zh_index_spot_sina, "指数行情", attempts=2)
@@ -528,13 +517,13 @@ class MarketAnalyzer:
         
         all_news = []
         today = datetime.now()
-        month_str = f"{today.year}年{today.month}月"
-        
+        date_str = today.strftime('%Y年%m月%d日')
+
         # 多维度搜索
         search_queries = [
-            f"A股 大盘 复盘 {month_str}",
-            f"股市 行情 分析 今日 {month_str}",
-            f"A股 市场 热点 板块 {month_str}",
+            "A股 大盘 复盘",
+            "股市 行情 分析",
+            "A股 市场 热点 板块",
         ]
         
         try:
@@ -632,7 +621,7 @@ class MarketAnalyzer:
                 snippet = n.get('snippet', '')[:100]
             news_text += f"{i}. {title}\n   {snippet}\n"
         
-        prompt = f"""你是一位专业的A股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
+        prompt = f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
 
 【重要】输出要求：
 - 必须输出纯 Markdown 文本格式
@@ -654,7 +643,6 @@ class MarketAnalyzer:
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元
-- 北向资金: {overview.north_flow:+.2f} 亿元
 
 ## 板块表现
 领涨: {top_sectors_text}
@@ -676,7 +664,7 @@ class MarketAnalyzer:
 （分析上证、深证、创业板等各指数走势特点）
 
 ### 三、资金动向
-（解读成交额和北向资金流向的含义）
+（解读成交额流向的含义）
 
 ### 四、热点解读
 （分析领涨领跌板块背后的逻辑和驱动因素）
@@ -736,7 +724,6 @@ class MarketAnalyzer:
 | 涨停 | {overview.limit_up_count} |
 | 跌停 | {overview.limit_down_count} |
 | 两市成交额 | {overview.total_amount:.0f}亿 |
-| 北向资金 | {overview.north_flow:+.2f}亿 |
 
 ### 四、板块表现
 - **领涨**: {top_text}

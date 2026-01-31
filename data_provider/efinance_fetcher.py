@@ -322,21 +322,23 @@ class EfinanceFetcher(BaseFetcher):
         beg_date = start_date.replace('-', '')
         end_date_fmt = end_date.replace('-', '')
         
-        logger.info(f"[API调用] ef.fund.get_quote_history(fund_code={stock_code}, "
-                   f"beg={beg_date}, end={end_date_fmt}, klt=101, fqt=1)")
+        logger.info(f"[API调用] ef.fund.get_quote_history(fund_code={stock_code})")
         
         try:
             import time as _time
             api_start = _time.time()
             
             # 调用 efinance 获取 ETF 日线数据
-            df = ef.fund.get_quote_history(
-                fund_code=stock_code,
-                beg=beg_date,
-                end=end_date_fmt,
-                klt=101,  # 日线
-                fqt=1     # 前复权
-            )
+            # 注意: ef.fund.get_quote_history 不支持 beg/end/klt/fqt 参数
+            # 它返回的是 NAV 数据: 日期, 单位净值, 累计净值, 涨跌幅
+            df = ef.fund.get_quote_history(fund_code=stock_code)
+            
+            # 手动过滤日期
+            if df is not None and not df.empty and '日期' in df.columns:
+                # 确保日期列是字符串格式，且格式匹配筛选条件
+                # ef 返回的日期通常是 'YYYY-MM-DD'
+                mask = (df['日期'] >= start_date) & (df['日期'] <= end_date)
+                df = df[mask].copy()
             
             api_elapsed = _time.time() - api_start
             
@@ -389,10 +391,25 @@ class EfinanceFetcher(BaseFetcher):
             # ETF 基金可能的列名
             '基金代码': 'code',
             '基金名称': 'name',
+            '单位净值': 'close',
         }
         
         # 重命名列
         df = df.rename(columns=column_mapping)
+        
+        # 对于 ETF 数据（只有 close/单位净值），补全其他 OHLC 列
+        # 这是一个近似处理，因为 efinance 基金接口不提供 OHLC 数据
+        if 'close' in df.columns and 'open' not in df.columns:
+            df['open'] = df['close']
+            df['high'] = df['close']
+            df['low'] = df['close']
+            
+        # 补全 volume 和 amount，如果缺失
+        if 'volume' not in df.columns:
+            df['volume'] = 0
+        if 'amount' not in df.columns:
+            df['amount'] = 0
+
         
         # 如果没有 code 列，手动添加
         if 'code' not in df.columns:

@@ -28,7 +28,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
 from tenacity import (
@@ -254,57 +254,173 @@ class AkshareFetcher(BaseFetcher):
     def _fetch_stock_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
         获取普通 A 股历史数据
-        
+
+        策略：
+        1. 优先尝试东方财富接口 (ak.stock_zh_a_hist)
+        2. 失败后尝试新浪财经接口 (ak.stock_zh_a_daily)
+        3. 最后尝试腾讯财经接口 (ak.stock_zh_a_hist_tx)
+        """
+        # 尝试列表
+        methods = [
+            (self._fetch_stock_data_em, "东方财富"),
+            (self._fetch_stock_data_sina, "新浪财经"),
+            (self._fetch_stock_data_tx, "腾讯财经"),
+        ]
+
+        last_error = None
+
+        for fetch_method, source_name in methods:
+            try:
+                logger.info(f"[数据源] 尝试使用 {source_name} 获取 {stock_code}...")
+                df = fetch_method(stock_code, start_date, end_date)
+
+                if df is not None and not df.empty:
+                    logger.info(f"[数据源] {source_name} 获取成功")
+                    return df
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[数据源] {source_name} 获取失败: {e}")
+                # 继续尝试下一个
+
+        # 所有都失败
+        raise DataFetchError(f"Akshare 所有渠道获取失败: {last_error}")
+
+    def _fetch_stock_data_em(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        获取普通 A 股历史数据 (东方财富)
         数据来源：ak.stock_zh_a_hist()
         """
         import akshare as ak
-        
+
         # 防封禁策略 1: 随机 User-Agent
         self._set_random_user_agent()
-        
+
         # 防封禁策略 2: 强制休眠
         self._enforce_rate_limit()
-        
-        logger.info(f"[API调用] ak.stock_zh_a_hist(symbol={stock_code}, period=daily, "
-                   f"start_date={start_date.replace('-', '')}, end_date={end_date.replace('-', '')}, adjust=qfq)")
-        
+
+        logger.info(f"[API调用] ak.stock_zh_a_hist(symbol={stock_code}, ...)")
+
         try:
-            # 调用 akshare 获取 A 股日线数据
-            # period="daily" 获取日线数据
-            # adjust="qfq" 获取前复权数据
             import time as _time
             api_start = _time.time()
-            
+
             df = ak.stock_zh_a_hist(
                 symbol=stock_code,
                 period="daily",
                 start_date=start_date.replace('-', ''),
                 end_date=end_date.replace('-', ''),
-                adjust="qfq"  # 前复权
+                adjust="qfq"
             )
-            
+
             api_elapsed = _time.time() - api_start
-            
-            # 记录返回数据摘要
+
             if df is not None and not df.empty:
-                logger.info(f"[API返回] ak.stock_zh_a_hist 成功: 返回 {len(df)} 行数据, 耗时 {api_elapsed:.2f}s")
-                logger.info(f"[API返回] 列名: {list(df.columns)}")
-                logger.info(f"[API返回] 日期范围: {df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]}")
-                logger.debug(f"[API返回] 最新3条数据:\n{df.tail(3).to_string()}")
+                logger.info(f"[API返回] ak.stock_zh_a_hist 成功: {len(df)} 行, 耗时 {api_elapsed:.2f}s")
+                return df
             else:
-                logger.warning(f"[API返回] ak.stock_zh_a_hist 返回空数据, 耗时 {api_elapsed:.2f}s")
-            
-            return df
-            
+                logger.warning(f"[API返回] ak.stock_zh_a_hist 返回空数据")
+                return pd.DataFrame()
+
         except Exception as e:
             error_msg = str(e).lower()
-            
-            # 检测反爬封禁
             if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
-                logger.warning(f"检测到可能被封禁: {e}")
-                raise RateLimitError(f"Akshare 可能被限流: {e}") from e
-            
-            raise DataFetchError(f"Akshare 获取数据失败: {e}") from e
+                raise RateLimitError(f"Akshare(EM) 可能被限流: {e}") from e
+            raise e
+
+    def _fetch_stock_data_sina(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        获取普通 A 股历史数据 (新浪财经)
+        数据来源：ak.stock_zh_a_daily()
+        """
+        import akshare as ak
+
+        # 转换代码格式：sh600000, sz000001
+        if stock_code.startswith(('6', '5', '9')):
+            symbol = f"sh{stock_code}"
+        else:
+            symbol = f"sz{stock_code}"
+
+        self._enforce_rate_limit()
+
+        try:
+            df = ak.stock_zh_a_daily(
+                symbol=symbol,
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust="qfq"
+            )
+
+            # 标准化新浪数据列名
+            # 新浪返回：date, open, high, low, close, volume, amount, outstanding_share, turnover
+            if df is not None and not df.empty:
+                # 确保日期列存在
+                if 'date' in df.columns:
+                    df = df.rename(columns={'date': '日期'})
+
+                # 映射其他列以匹配 _normalize_data 的期望
+                # _normalize_data 期望：日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额
+                rename_map = {
+                    'open': '开盘', 'high': '最高', 'low': '最低',
+                    'close': '收盘', 'volume': '成交量', 'amount': '成交额'
+                }
+                df = df.rename(columns=rename_map)
+
+                # 计算涨跌幅（新浪接口可能不返回）
+                if '收盘' in df.columns:
+                    df['涨跌幅'] = df['收盘'].pct_change() * 100
+                    df['涨跌幅'] = df['涨跌幅'].fillna(0)
+
+                return df
+            return pd.DataFrame()
+
+        except Exception as e:
+            raise e
+
+    def _fetch_stock_data_tx(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        获取普通 A 股历史数据 (腾讯财经)
+        数据来源：ak.stock_zh_a_hist_tx()
+        """
+        import akshare as ak
+
+        # 转换代码格式：sh600000, sz000001
+        if stock_code.startswith(('6', '5', '9')):
+            symbol = f"sh{stock_code}"
+        else:
+            symbol = f"sz{stock_code}"
+
+        self._enforce_rate_limit()
+
+        try:
+            df = ak.stock_zh_a_hist_tx(
+                symbol=symbol,
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust="qfq"
+            )
+
+            # 标准化腾讯数据列名
+            # 腾讯返回：date, open, close, high, low, volume, amount
+            if df is not None and not df.empty:
+                rename_map = {
+                    'date': '日期', 'open': '开盘', 'high': '最高',
+                    'low': '最低', 'close': '收盘', 'volume': '成交量',
+                    'amount': '成交额'
+                }
+                df = df.rename(columns=rename_map)
+
+                # 腾讯数据通常包含 '涨跌幅'，如果没有则计算
+                if 'pct_chg' in df.columns:
+                    df = df.rename(columns={'pct_chg': '涨跌幅'})
+                elif '收盘' in df.columns:
+                    df['涨跌幅'] = df['收盘'].pct_change() * 100
+                    df['涨跌幅'] = df['涨跌幅'].fillna(0)
+
+                return df
+            return pd.DataFrame()
+
+        except Exception as e:
+            raise e
     
     def _fetch_etf_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
@@ -1078,6 +1194,149 @@ class AkshareFetcher(BaseFetcher):
         result['chip_distribution'] = self.get_chip_distribution(stock_code)
         
         return result
+
+    def get_main_indices(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取主要指数实时行情 (新浪接口)
+        """
+        import akshare as ak
+
+        # 主要指数代码映射
+        indices_map = {
+            'sh000001': '上证指数',
+            'sz399001': '深证成指',
+            'sz399006': '创业板指',
+            'sh000688': '科创50',
+            'sh000016': '上证50',
+            'sh000300': '沪深300',
+        }
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            # 使用 akshare 获取指数行情（新浪财经接口）
+            df = ak.stock_zh_index_spot_sina()
+
+            results = []
+            if df is not None and not df.empty:
+                for code, name in indices_map.items():
+                    # 查找对应指数
+                    row = df[df['代码'] == code]
+                    if row.empty:
+                        # 尝试带前缀查找
+                        row = df[df['代码'].str.contains(code)]
+
+                    if not row.empty:
+                        row = row.iloc[0]
+                        current = safe_float(row.get('最新价', 0))
+                        prev_close = safe_float(row.get('昨收', 0))
+                        high = safe_float(row.get('最高', 0))
+                        low = safe_float(row.get('最低', 0))
+
+                        # 计算振幅
+                        amplitude = 0.0
+                        if prev_close > 0:
+                            amplitude = (high - low) / prev_close * 100
+
+                        results.append({
+                            'code': code,
+                            'name': name,
+                            'current': current,
+                            'change': safe_float(row.get('涨跌额', 0)),
+                            'change_pct': safe_float(row.get('涨跌幅', 0)),
+                            'open': safe_float(row.get('今开', 0)),
+                            'high': high,
+                            'low': low,
+                            'prev_close': prev_close,
+                            'volume': safe_float(row.get('成交量', 0)),
+                            'amount': safe_float(row.get('成交额', 0)),
+                            'amplitude': amplitude,
+                        })
+            return results
+
+        except Exception as e:
+            logger.error(f"[Akshare] 获取指数行情失败: {e}")
+            return None
+
+    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+        """
+        获取市场涨跌统计 (东财接口)
+        """
+        import akshare as ak
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            # 获取全部A股实时行情
+            df = ak.stock_zh_a_spot_em()
+
+            if df is not None and not df.empty:
+                change_col = '涨跌幅'
+                if change_col in df.columns:
+                    # 转换为数值
+                    df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+
+                    stats = {
+                        'up_count': len(df[df[change_col] > 0]),
+                        'down_count': len(df[df[change_col] < 0]),
+                        'flat_count': len(df[df[change_col] == 0]),
+                        'limit_up_count': len(df[df[change_col] >= 9.9]),
+                        'limit_down_count': len(df[df[change_col] <= -9.9]),
+                        'total_amount': 0.0
+                    }
+
+                    # 计算两市成交额
+                    amount_col = '成交额'
+                    if amount_col in df.columns:
+                        df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
+                        stats['total_amount'] = df[amount_col].sum() / 1e8  # 转为亿元
+
+                    return stats
+            return None
+
+        except Exception as e:
+            logger.error(f"[Akshare] 获取市场统计失败: {e}")
+            return None
+
+    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """
+        获取板块涨跌榜 (东财接口)
+        """
+        import akshare as ak
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            # 获取行业板块行情
+            df = ak.stock_board_industry_name_em()
+
+            if df is not None and not df.empty:
+                change_col = '涨跌幅'
+                if change_col in df.columns:
+                    df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+                    df = df.dropna(subset=[change_col])
+
+                    # 涨幅前n
+                    top = df.nlargest(n, change_col)
+                    top_sectors = [
+                        {'name': row['板块名称'], 'change_pct': row[change_col]}
+                        for _, row in top.iterrows()
+                    ]
+
+                    # 跌幅前n
+                    bottom = df.nsmallest(n, change_col)
+                    bottom_sectors = [
+                        {'name': row['板块名称'], 'change_pct': row[change_col]}
+                        for _, row in bottom.iterrows()
+                    ]
+
+                    return top_sectors, bottom_sectors
+            return None
+
+        except Exception as e:
+            logger.error(f"[Akshare] 获取板块排行失败: {e}")
+            return None
 
 
 if __name__ == "__main__":

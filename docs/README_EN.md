@@ -352,6 +352,18 @@ DEBUG=false                    # Enable debug logging
 
 ---
 
+## ☕ Support the Project
+
+<div align="center">
+  <a href="https://ko-fi.com/mumu157" target="_blank">
+    <img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" alt="Buy Me a Coffee at ko-fi.com" style="height: 40px !important;">
+  </a>
+</div>
+
+| Alipay | WeChat Pay | Ko-fi |
+| :---: | :---: | :---: |
+| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <a href="https://ko-fi.com/mumu157" target="_blank"><img src="../sources/ko-fi.png" width="200" alt="Ko-fi"></a> |
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please:
@@ -371,6 +383,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
+
+## ⭐ Star History
+**Made with ❤️ by AI enthusiasts | Star ⭐ this repo if you find it useful!**
+
+
+<a href="https://star-history.com/#ZhuLinsen/daily_stock_analysis&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date" />
+ </picture>
+</a>
 
 ## ⚠️ Disclaimer
 
@@ -400,5 +424,3 @@ The developers of this tool are not liable for any financial losses resulting fr
 - Discussions: [Join discussions](https://github.com/ZhuLinsen/daily_stock_analysis/discussions)
 
 ---
-
-**Made with ❤️ by AI enthusiasts | Star ⭐ this repo if you find it useful!**
