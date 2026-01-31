@@ -601,6 +601,144 @@ class TushareFetcher(BaseFetcher):
         """检查 Tushare API 是否可用"""
         return self._api is not None
 
+    # ==================== 扩展功能：板块涨跌榜 ====================
+    
+    def get_sector_rankings(self, trade_date: Optional[str] = None) -> Dict[str, List[Dict]]:
+        """
+        获取行业板块涨跌榜
+        
+        使用同花顺板块指数接口：
+        - ths_index: 获取板块列表（需要6000积分）
+        - ths_daily: 获取板块日线行情
+        
+        文档：
+        - https://tushare.pro/document/2?doc_id=259 (ths_index)
+        - https://tushare.pro/document/2?doc_id=260 (ths_daily)
+        
+        Args:
+            trade_date: 交易日期，格式 YYYYMMDD，默认为最近交易日
+            
+        Returns:
+            {
+                'top_sectors': [{'name': '板块名', 'change_pct': 涨跌幅}, ...],  # 涨幅前5
+                'bottom_sectors': [{'name': '板块名', 'change_pct': 涨跌幅}, ...]  # 跌幅前5
+            }
+        """
+        if self._api is None:
+            logger.warning("Tushare API 未初始化，无法获取板块涨跌榜")
+            return {}
+        
+        # 确定交易日期
+        if trade_date is None:
+            trade_date = datetime.now().strftime('%Y%m%d')
+        else:
+            trade_date = trade_date.replace('-', '')
+        
+        try:
+            logger.info(f"[Tushare] 获取 {trade_date} 板块涨跌榜...")
+            
+            # Step 1: 获取行业板块列表（type='I' 表示行业指数）
+            logger.info("[Tushare] 调用 ths_index 获取行业板块列表...")
+            index_df = self._api.ths_index(
+                exchange='A',
+                type='I'  # I=行业指数, N=概念指数, R=地域指数
+            )
+            
+            if index_df is None or index_df.empty:
+                logger.warning("[Tushare] ths_index 返回空数据，可能积分不足(需要6000积分)")
+                return {}
+            
+            logger.info(f"[Tushare] 获取到 {len(index_df)} 个行业板块")
+            
+            # 获取板块代码列表
+            ts_codes = index_df['ts_code'].tolist()
+            
+            # Step 2: 获取板块日线行情
+            logger.info("[Tushare] 调用 ths_daily 获取板块行情...")
+            
+            # ths_daily 支持批量查询，但单次最多 5000 条
+            daily_df = self._api.ths_daily(
+                trade_date=trade_date,
+                fields='ts_code,trade_date,close,pct_change'
+            )
+            
+            # 如果当天没数据，尝试获取最近交易日
+            if daily_df is None or daily_df.empty:
+                logger.warning(f"[Tushare] {trade_date} 无板块行情，尝试获取最近交易日...")
+                
+                # 获取交易日历
+                cal_df = self._api.trade_cal(
+                    exchange='SSE',
+                    start_date=(datetime.strptime(trade_date, '%Y%m%d') - 
+                               pd.Timedelta(days=10)).strftime('%Y%m%d'),
+                    end_date=trade_date,
+                    is_open='1'
+                )
+                
+                if cal_df is not None and not cal_df.empty:
+                    # 从最新日期向前尝试
+                    for _, row in cal_df.sort_values('cal_date', ascending=False).iterrows():
+                        last_trade_date = row['cal_date']
+                        daily_df = self._api.ths_daily(
+                            trade_date=last_trade_date,
+                            fields='ts_code,trade_date,close,pct_change'
+                        )
+                        if daily_df is not None and not daily_df.empty:
+                            logger.info(f"[Tushare] 使用 {last_trade_date} 的板块行情")
+                            break
+            
+            if daily_df is None or daily_df.empty:
+                logger.warning("[Tushare] ths_daily 返回空数据")
+                return {}
+            
+            # Step 3: 合并板块名称
+            # 将 index_df 的 ts_code 和 name 合并到 daily_df
+            merged_df = daily_df.merge(
+                index_df[['ts_code', 'name']], 
+                on='ts_code', 
+                how='left'
+            )
+            
+            # 确保涨跌幅是数值类型
+            merged_df['pct_change'] = pd.to_numeric(merged_df['pct_change'], errors='coerce')
+            merged_df = merged_df.dropna(subset=['pct_change', 'name'])
+            
+            if merged_df.empty:
+                logger.warning("[Tushare] 合并后无有效数据")
+                return {}
+            
+            # Step 4: 排序获取涨跌榜
+            # 涨幅前5
+            top_df = merged_df.nlargest(5, 'pct_change')
+            top_sectors = [
+                {'name': row['name'], 'change_pct': float(row['pct_change'])}
+                for _, row in top_df.iterrows()
+            ]
+            
+            # 跌幅前5
+            bottom_df = merged_df.nsmallest(5, 'pct_change')
+            bottom_sectors = [
+                {'name': row['name'], 'change_pct': float(row['pct_change'])}
+                for _, row in bottom_df.iterrows()
+            ]
+            
+            logger.info(f"[Tushare] 板块涨跌榜获取成功")
+            logger.info(f"[Tushare] 领涨板块: {[s['name'] for s in top_sectors]}")
+            logger.info(f"[Tushare] 领跌板块: {[s['name'] for s in bottom_sectors]}")
+            
+            return {
+                'top_sectors': top_sectors,
+                'bottom_sectors': bottom_sectors
+            }
+            
+        except Exception as e:
+            error_msg = str(e)
+            if '权限' in error_msg or 'permission' in error_msg.lower() or '积分' in error_msg:
+                logger.warning(f"[Tushare] 板块接口权限不足(需要6000积分): {e}")
+            else:
+                logger.error(f"[Tushare] 获取板块涨跌榜失败: {e}")
+            return {}
+
 
 if __name__ == "__main__":
     # 测试代码

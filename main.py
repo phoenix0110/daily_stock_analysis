@@ -411,8 +411,9 @@ def main() -> int:
                     serpapi_keys=config.serpapi_keys
                 )
             
-            if config.gemini_api_key:
-                analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
+            # 检查所有支持的 AI API（Gemini/HiAPI/OpenAI）
+            if config.gemini_api_key or config.hiapi_api_key or config.openai_api_key:
+                analyzer = GeminiAnalyzer()
             
             run_market_review(notifier, analyzer, search_service, tushare_fetcher)
             return 0
