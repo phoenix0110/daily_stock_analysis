@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
+import akshare as ak
 import pandas as pd
 
 from src.config import get_config
