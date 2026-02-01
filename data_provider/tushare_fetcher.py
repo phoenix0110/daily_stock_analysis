@@ -20,6 +20,7 @@ TushareFetcher - 备用数据源 1 (Priority 2)
 """
 
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,8 +36,21 @@ from tenacity import (
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
 from src.config import get_config
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _is_us_code(stock_code: str) -> bool:
+    """
+    判断代码是否为美股
+    
+    美股代码规则：
+    - 1-5个大写字母，如 'AAPL', 'TSLA'
+    - 可能包含 '.'，如 'BRK.B'
+    """
+    code = stock_code.strip().upper()
+    return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
 class TushareFetcher(BaseFetcher):
@@ -53,7 +67,7 @@ class TushareFetcher(BaseFetcher):
     """
     
     name = "TushareFetcher"
-    priority = 2  # 默认优先级，会在 __init__ 中根据配置动态调整
+    priority = int(os.getenv("TUSHARE_PRIORITY", "2"))  # 默认优先级，会在 __init__ 中根据配置动态调整
 
     def __init__(self, rate_limit_per_minute: int = 80):
         """
@@ -224,12 +238,20 @@ class TushareFetcher(BaseFetcher):
         
         流程：
         1. 检查 API 是否可用
-        2. 执行速率限制检查
-        3. 转换股票代码格式
-        4. 调用 API 获取数据
+        2. 检查是否为美股（不支持）
+        3. 执行速率限制检查
+        4. 转换股票代码格式
+        5. 调用 API 获取数据
         """
         if self._api is None:
             raise DataFetchError("Tushare API 未初始化，请检查 Token 配置")
+        
+        # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if _is_us_code(stock_code):
+            raise DataFetchError(f"TushareFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+        
+        # 速率限制检查
+        self._check_rate_limit()
         
         # 转换代码格式
         ts_code = self._convert_stock_code(stock_code)

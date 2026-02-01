@@ -103,7 +103,11 @@ class Config:
     discord_bot_token: Optional[str] = None  # Discord Bot Token
     discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
     discord_webhook_url: Optional[str] = None  # Discord Webhook URL
-    
+
+    # AstrBot 通知配置
+    astrbot_token: Optional[str] = None
+    astrbot_url: Optional[str] = None
+
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
 
@@ -145,7 +149,12 @@ class Config:
     # 筹码分布开关（该接口不稳定，云端部署建议关闭）
     enable_chip_distribution: bool = True
     # 实时行情数据源优先级（逗号分隔）
-    realtime_source_priority: str = "akshare_sina,tencent,efinance,akshare_em"
+    # 推荐顺序：tencent > akshare_sina > efinance > akshare_em > tushare
+    # - tencent: 腾讯财经，有量比/换手率/市盈率等，单股查询稳定（推荐）
+    # - akshare_sina: 新浪财经，基本行情稳定，但无量比
+    # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
+    # - tushare: Tushare Pro，需要2000积分，数据全面（付费用户可优先使用）
+    realtime_source_priority: str = "tencent,akshare_sina,efinance,akshare_em"
     # 实时行情缓存时间（秒）
     realtime_cache_ttl: int = 600
     # 熔断器冷却时间（秒）
@@ -343,6 +352,8 @@ class Config:
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
             discord_main_channel_id=os.getenv('DISCORD_MAIN_CHANNEL_ID'),
             discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
+            astrbot_url=os.getenv('ASTRBOT_URL'),
+            astrbot_token=os.getenv('ASTRBOT_TOKEN'),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
             report_type=os.getenv('REPORT_TYPE', 'simple').lower(),
             analysis_delay=float(os.getenv('ANALYSIS_DELAY', '0')),
@@ -389,9 +400,11 @@ class Config:
             enable_realtime_quote=os.getenv('ENABLE_REALTIME_QUOTE', 'true').lower() == 'true',
             enable_chip_distribution=os.getenv('ENABLE_CHIP_DISTRIBUTION', 'true').lower() == 'true',
             # 实时行情数据源优先级：
-            # - akshare_sina/tencent: 单股票直连查询，轻量级，推荐放前面
-            # - efinance/akshare_em: 全量拉取，数据丰富但负载大
-            realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'akshare_sina,tencent,efinance,akshare_em'),
+            # - tencent: 腾讯财经，有量比/换手率/PE/PB等，单股查询稳定（推荐）
+            # - akshare_sina: 新浪财经，基本行情稳定，但无量比
+            # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
+            # - tushare: Tushare Pro，需要2000积分，数据全面
+            realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'tencent,akshare_sina,efinance,akshare_em'),
             realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
             circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300'))
         )

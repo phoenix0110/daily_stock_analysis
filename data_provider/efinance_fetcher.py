@@ -21,7 +21,9 @@ EfinanceFetcher - 优先数据源 (Priority 0)
 """
 
 import logging
+import os
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -128,6 +130,18 @@ def _is_etf_code(stock_code: str) -> bool:
     return stock_code.startswith(etf_prefixes) and len(stock_code) == 6
 
 
+def _is_us_code(stock_code: str) -> bool:
+    """
+    判断代码是否为美股
+    
+    美股代码规则：
+    - 1-5个大写字母，如 'AAPL', 'TSLA'
+    - 可能包含 '.'，如 'BRK.B'
+    """
+    code = stock_code.strip().upper()
+    return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
+
+
 class EfinanceFetcher(BaseFetcher):
     """
     Efinance 数据源实现
@@ -148,7 +162,7 @@ class EfinanceFetcher(BaseFetcher):
     """
     
     name = "EfinanceFetcher"
-    priority = 0  # 最高优先级，排在 AkshareFetcher 之前
+    priority = int(os.getenv("EFINANCE_PRIORITY", "0"))  # 最高优先级，排在 AkshareFetcher 之前
     
     def __init__(self, sleep_min: float = 1.5, sleep_max: float = 3.0):
         """
@@ -213,16 +227,21 @@ class EfinanceFetcher(BaseFetcher):
         从 efinance 获取原始数据
         
         根据代码类型自动选择 API：
+        - 美股：不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         - 普通股票：使用 ef.stock.get_quote_history()
         - ETF 基金：使用 ef.fund.get_quote_history()
         
         流程：
-        1. 判断代码类型（股票/ETF）
+        1. 判断代码类型（美股/股票/ETF）
         2. 设置随机 User-Agent
         3. 执行速率限制（随机休眠）
         4. 调用对应的 efinance API
         5. 处理返回数据
         """
+        # 美股不支持，抛出异常让 DataFetcherManager 切换到 AkshareFetcher/YfinanceFetcher
+        if _is_us_code(stock_code):
+            raise DataFetchError(f"EfinanceFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+        
         # 根据代码类型选择不同的获取方法
         if _is_etf_code(stock_code):
             return self._fetch_etf_data(stock_code, start_date, end_date)
@@ -497,6 +516,11 @@ class EfinanceFetcher(BaseFetcher):
             high_col = '最高' if '最高' in df.columns else 'high'
             low_col = '最低' if '最低' in df.columns else 'low'
             open_col = '开盘' if '开盘' in df.columns else 'open'
+            # efinance 也返回量比、市盈率、市值等字段
+            vol_ratio_col = '量比' if '量比' in df.columns else 'volume_ratio'
+            pe_col = '市盈率' if '市盈率' in df.columns else 'pe_ratio'
+            total_mv_col = '总市值' if '总市值' in df.columns else 'total_mv'
+            circ_mv_col = '流通市值' if '流通市值' in df.columns else 'circ_mv'
             
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
@@ -512,10 +536,14 @@ class EfinanceFetcher(BaseFetcher):
                 high=safe_float(row.get(high_col)),
                 low=safe_float(row.get(low_col)),
                 open_price=safe_float(row.get(open_col)),
+                volume_ratio=safe_float(row.get(vol_ratio_col)),  # 量比
+                pe_ratio=safe_float(row.get(pe_col)),  # 市盈率
+                total_mv=safe_float(row.get(total_mv_col)),  # 总市值
+                circ_mv=safe_float(row.get(circ_mv_col)),  # 流通市值
             )
             
             logger.info(f"[实时行情-efinance] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
-                       f"换手率={quote.turnover_rate}%")
+                       f"量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%")
             return quote
             
         except Exception as e:

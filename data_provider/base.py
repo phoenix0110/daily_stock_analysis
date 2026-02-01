@@ -492,11 +492,12 @@ class DataFetcherManager:
         获取实时行情数据（自动故障切换）
         
         故障切换策略（按配置的优先级）：
-        1. EfinanceFetcher.get_realtime_quote()
-        2. AkshareFetcher.get_realtime_quote(source="em")  - 东财
-        3. AkshareFetcher.get_realtime_quote(source="sina") - 新浪
-        4. AkshareFetcher.get_realtime_quote(source="tencent") - 腾讯
-        5. 返回 None（降级兜底）
+        1. 美股：使用 YfinanceFetcher.get_realtime_quote()
+        2. EfinanceFetcher.get_realtime_quote()
+        3. AkshareFetcher.get_realtime_quote(source="em")  - 东财
+        4. AkshareFetcher.get_realtime_quote(source="sina") - 新浪
+        5. AkshareFetcher.get_realtime_quote(source="tencent") - 腾讯
+        6. 返回 None（降级兜底）
         
         Args:
             stock_code: 股票代码
@@ -505,6 +506,7 @@ class DataFetcherManager:
             UnifiedRealtimeQuote 对象，所有数据源都失败则返回 None
         """
         from .realtime_types import get_realtime_circuit_breaker
+        from .akshare_fetcher import _is_us_code
         from src.config import get_config
         
         config = get_config()
@@ -512,6 +514,22 @@ class DataFetcherManager:
         # 如果实时行情功能被禁用，直接返回 None
         if not config.enable_realtime_quote:
             logger.debug(f"[实时行情] 功能已禁用，跳过 {stock_code}")
+            return None
+        
+        # 美股单独处理，使用 YfinanceFetcher
+        if _is_us_code(stock_code):
+            for fetcher in self._fetchers:
+                if fetcher.name == "YfinanceFetcher":
+                    if hasattr(fetcher, 'get_realtime_quote'):
+                        try:
+                            quote = fetcher.get_realtime_quote(stock_code)
+                            if quote is not None:
+                                logger.info(f"[实时行情] 美股 {stock_code} 成功获取 (来源: yfinance)")
+                                return quote
+                        except Exception as e:
+                            logger.warning(f"[实时行情] 美股 {stock_code} 获取失败: {e}")
+                    break
+            logger.warning(f"[实时行情] 美股 {stock_code} 无可用数据源")
             return None
         
         # 获取配置的数据源优先级
@@ -555,6 +573,14 @@ class DataFetcherManager:
                         if fetcher.name == "AkshareFetcher":
                             if hasattr(fetcher, 'get_realtime_quote'):
                                 quote = fetcher.get_realtime_quote(stock_code, source="tencent")
+                            break
+                
+                elif source == "tushare":
+                    # 尝试 TushareFetcher（需要 Tushare Pro 积分）
+                    for fetcher in self._fetchers:
+                        if fetcher.name == "TushareFetcher":
+                            if hasattr(fetcher, 'get_realtime_quote'):
+                                quote = fetcher.get_realtime_quote(stock_code)
                             break
                 
                 if quote is not None and quote.has_basic_data():

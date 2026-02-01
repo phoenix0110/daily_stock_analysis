@@ -15,6 +15,7 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -28,6 +29,8 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
+from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +54,7 @@ class YfinanceFetcher(BaseFetcher):
     """
     
     name = "YfinanceFetcher"
-    priority = 4
+    priority = int(os.getenv("YFINANCE_PRIORITY", "4"))
     
     def __init__(self):
         """初始化 YfinanceFetcher"""
@@ -283,6 +286,122 @@ class YfinanceFetcher(BaseFetcher):
             logger.error(f"[Yfinance] 获取指数行情失败: {e}")
 
         return None
+
+    def _is_us_stock(self, stock_code: str) -> bool:
+        """
+        判断代码是否为美股
+        
+        美股代码规则：
+        - 1-5个大写字母，如 'AAPL', 'TSLA'
+        - 可能包含 '.'，如 'BRK.B'
+        """
+        code = stock_code.strip().upper()
+        return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
+
+    def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+        """
+        获取美股实时行情数据
+        
+        数据来源：yfinance Ticker.info
+        
+        Args:
+            stock_code: 美股代码，如 'AMD', 'AAPL', 'TSLA'
+            
+        Returns:
+            UnifiedRealtimeQuote 对象，获取失败返回 None
+        """
+        import yfinance as yf
+        
+        # 仅处理美股
+        if not self._is_us_stock(stock_code):
+            logger.debug(f"[Yfinance] {stock_code} 不是美股，跳过")
+            return None
+        
+        try:
+            symbol = stock_code.strip().upper()
+            logger.debug(f"[Yfinance] 获取美股 {symbol} 实时行情")
+            
+            ticker = yf.Ticker(symbol)
+            
+            # 尝试获取 fast_info（更快，但字段较少）
+            try:
+                info = ticker.fast_info
+                if info is None:
+                    raise ValueError("fast_info is None")
+                
+                price = getattr(info, 'lastPrice', None) or getattr(info, 'last_price', None)
+                prev_close = getattr(info, 'previousClose', None) or getattr(info, 'previous_close', None)
+                open_price = getattr(info, 'open', None)
+                high = getattr(info, 'dayHigh', None) or getattr(info, 'day_high', None)
+                low = getattr(info, 'dayLow', None) or getattr(info, 'day_low', None)
+                volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
+                market_cap = getattr(info, 'marketCap', None) or getattr(info, 'market_cap', None)
+                
+            except Exception:
+                # 回退到 history 方法获取最新数据
+                logger.debug(f"[Yfinance] fast_info 失败，尝试 history 方法")
+                hist = ticker.history(period='2d')
+                if hist.empty:
+                    logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
+                    return None
+                
+                today = hist.iloc[-1]
+                prev = hist.iloc[-2] if len(hist) > 1 else today
+                
+                price = float(today['Close'])
+                prev_close = float(prev['Close'])
+                open_price = float(today['Open'])
+                high = float(today['High'])
+                low = float(today['Low'])
+                volume = int(today['Volume'])
+                market_cap = None
+            
+            # 计算涨跌幅
+            change_amount = None
+            change_pct = None
+            if price is not None and prev_close is not None and prev_close > 0:
+                change_amount = price - prev_close
+                change_pct = (change_amount / prev_close) * 100
+            
+            # 计算振幅
+            amplitude = None
+            if high is not None and low is not None and prev_close is not None and prev_close > 0:
+                amplitude = ((high - low) / prev_close) * 100
+            
+            # 获取股票名称
+            try:
+                name = ticker.info.get('shortName', '') or ticker.info.get('longName', '') or symbol
+            except Exception:
+                name = symbol
+            
+            quote = UnifiedRealtimeQuote(
+                code=symbol,
+                name=name,
+                source=RealtimeSource.FALLBACK,
+                price=price,
+                change_pct=round(change_pct, 2) if change_pct is not None else None,
+                change_amount=round(change_amount, 4) if change_amount is not None else None,
+                volume=volume,
+                amount=None,  # yfinance 不直接提供成交额
+                volume_ratio=None,
+                turnover_rate=None,
+                amplitude=round(amplitude, 2) if amplitude is not None else None,
+                open_price=open_price,
+                high=high,
+                low=low,
+                pre_close=prev_close,
+                pe_ratio=None,
+                pb_ratio=None,
+                total_mv=market_cap,
+                circ_mv=None,
+            )
+            
+            logger.info(f"[Yfinance] 获取美股 {symbol} 实时行情成功: 价格={price}")
+            return quote
+            
+        except Exception as e:
+            logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}")
+            return None
 
 
 if __name__ == "__main__":
