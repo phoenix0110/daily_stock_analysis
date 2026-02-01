@@ -1,3 +1,5 @@
+<div align="center">
+
 # 📈 AI Stock Analysis System
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/daily_stock_analysis?style=social)](https://github.com/ZhuLinsen/daily_stock_analysis/stargazers)
@@ -8,9 +10,20 @@
 
 > 🤖 AI-powered stock analysis system for A-shares, Hong Kong stocks, and US stocks. Automatically analyzes your watchlist daily and sends "Decision Dashboard" to WeChat Work/Feishu/Telegram/Email
 
-English | [简体中文](../README.md)
+[**Key Features**](#-key-features) • [**Deployment**](DEPLOY.md) • [**Sample Output**](#-sample-output) • [**Usage Guide**](full-guide.md) • [**Changelog**](CHANGELOG.md)
 
-![Demo](./sources/all_2026-01-13_221547.gif)
+English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
+
+</div>
+
+## 💖 Sponsors
+
+<div align="center">
+  <a href="https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis" target="_blank">
+    <img src="../sources/serpapi_banner_en.png" alt="Easily scrape real-time financial news data from search engines - SerpApi" height="160">
+  </a>
+</div>
+<br>
 
 ## ✨ Key Features
 
@@ -88,7 +101,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `STOCK_LIST` | Watchlist codes, e.g., `600519,AAPL,hk00700` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news) | Recommended |
-| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/) Backup search | Optional |
+| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) Backup search | Optional |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/) Token | Optional |
 
 **Stock Code Format**
@@ -225,6 +238,8 @@ PUSHPLUS_TOKEN=your_token_here
 
 ## 🎨 Sample Output
 
+![Demo](../sources/all_2026-01-13_221547.gif)
+
 ### Decision Dashboard Format
 
 ```markdown
@@ -337,6 +352,18 @@ DEBUG=false                    # Enable debug logging
 
 ---
 
+## ☕ Support the Project
+
+<div align="center">
+  <a href="https://ko-fi.com/mumu157" target="_blank">
+    <img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" alt="Buy Me a Coffee at ko-fi.com" style="height: 40px !important;">
+  </a>
+</div>
+
+| Alipay | WeChat Pay | Ko-fi |
+| :---: | :---: | :---: |
+| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <a href="https://ko-fi.com/mumu157" target="_blank"><img src="../sources/ko-fi.png" width="200" alt="Ko-fi"></a> |
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please:
@@ -356,6 +383,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
+
+## ⭐ Star History
+**Made with ❤️ by AI enthusiasts | Star ⭐ this repo if you find it useful!**
+
+
+<a href="https://star-history.com/#ZhuLinsen/daily_stock_analysis&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date" />
+ </picture>
+</a>
 
 ## ⚠️ Disclaimer
 
@@ -385,5 +424,3 @@ The developers of this tool are not liable for any financial losses resulting fr
 - Discussions: [Join discussions](https://github.com/ZhuLinsen/daily_stock_analysis/discussions)
 
 ---
-
-**Made with ❤️ by AI enthusiasts | Star ⭐ this repo if you find it useful!**

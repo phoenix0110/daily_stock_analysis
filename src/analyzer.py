@@ -87,6 +87,66 @@ STOCK_NAME_MAP = {
 }
 
 
+def get_stock_name_multi_source(
+    stock_code: str, 
+    context: Optional[Dict] = None,
+    data_manager = None
+) -> str:
+    """
+    多来源获取股票中文名称
+    
+    获取策略（按优先级）：
+    1. 从传入的 context 中获取（realtime 数据）
+    2. 从静态映射表 STOCK_NAME_MAP 获取
+    3. 从 DataFetcherManager 获取（各数据源）
+    4. 返回默认名称（股票+代码）
+    
+    Args:
+        stock_code: 股票代码
+        context: 分析上下文（可选）
+        data_manager: DataFetcherManager 实例（可选）
+        
+    Returns:
+        股票中文名称
+    """
+    # 1. 从上下文获取（实时行情数据）
+    if context:
+        # 优先从 stock_name 字段获取
+        if context.get('stock_name'):
+            name = context['stock_name']
+            if name and not name.startswith('股票'):
+                return name
+        
+        # 其次从 realtime 数据获取
+        if 'realtime' in context and context['realtime'].get('name'):
+            return context['realtime']['name']
+    
+    # 2. 从静态映射表获取
+    if stock_code in STOCK_NAME_MAP:
+        return STOCK_NAME_MAP[stock_code]
+    
+    # 3. 从数据源获取
+    if data_manager is None:
+        try:
+            from data_provider.base import DataFetcherManager
+            data_manager = DataFetcherManager()
+        except Exception as e:
+            logger.debug(f"无法初始化 DataFetcherManager: {e}")
+    
+    if data_manager:
+        try:
+            name = data_manager.get_stock_name(stock_code)
+            if name:
+                # 更新缓存
+                STOCK_NAME_MAP[stock_code] = name
+                return name
+        except Exception as e:
+            logger.debug(f"从数据源获取股票名称失败: {e}")
+    
+    # 4. 返回默认名称
+    return f'股票{stock_code}'
+
+
 @dataclass
 class AnalysisResult:
     """
@@ -101,6 +161,7 @@ class AnalysisResult:
     sentiment_score: int  # 综合评分 0-100 (>70强烈看多, >60看多, 40-60震荡, <40看空)
     trend_prediction: str  # 趋势预测：强烈看多/看多/震荡/看空/强烈看空
     operation_advice: str  # 操作建议：买入/加仓/持有/减仓/卖出/观望
+    decision_type: str = "hold"  # 决策类型：buy/hold/sell（用于统计）
     confidence_level: str = "中"  # 置信度：高/中/低
     
     # ========== 决策仪表盘 (新增) ==========
@@ -148,6 +209,7 @@ class AnalysisResult:
             'sentiment_score': self.sentiment_score,
             'trend_prediction': self.trend_prediction,
             'operation_advice': self.operation_advice,
+            'decision_type': self.decision_type,
             'confidence_level': self.confidence_level,
             'dashboard': self.dashboard,  # 决策仪表盘数据
             'trend_analysis': self.trend_analysis,
@@ -286,11 +348,13 @@ class GeminiAnalyzer:
 
 ```json
 {
+    "stock_name": "股票中文名称",
     "sentiment_score": 0-100整数,
     "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
     "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
+    "decision_type": "buy/hold/sell",
     "confidence_level": "高/中/低",
-    
+
     "dashboard": {
         "core_conclusion": {
             "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
@@ -301,7 +365,7 @@ class GeminiAnalyzer:
                 "has_position": "持仓者建议：具体操作指引"
             }
         },
-        
+
         "data_perspective": {
             "trend_status": {
                 "ma_alignment": "均线排列状态描述",
@@ -331,7 +395,7 @@ class GeminiAnalyzer:
                 "chip_health": "健康/一般/警惕"
             }
         },
-        
+
         "intelligence": {
             "latest_news": "【最新消息】近期重要新闻摘要",
             "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
@@ -339,7 +403,7 @@ class GeminiAnalyzer:
             "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
             "sentiment_summary": "舆情情绪一句话总结"
         },
-        
+
         "battle_plan": {
             "sniper_points": {
                 "ideal_buy": "理想买入点：XX元（在MA5附近）",
@@ -361,12 +425,12 @@ class GeminiAnalyzer:
             ]
         }
     },
-    
+
     "analysis_summary": "100字综合分析摘要",
     "key_points": "3-5个核心看点，逗号分隔",
     "risk_warning": "风险提示",
     "buy_reason": "操作理由，引用交易理念",
-    
+
     "trend_analysis": "走势形态分析",
     "short_term_outlook": "短期1-3日展望",
     "medium_term_outlook": "中期1-2周展望",
@@ -380,7 +444,7 @@ class GeminiAnalyzer:
     "news_summary": "新闻摘要",
     "market_sentiment": "市场情绪",
     "hot_topics": "相关热点",
-    
+
     "search_performed": true/false,
     "data_sources": "数据来源说明"
 }
@@ -908,14 +972,14 @@ class GeminiAnalyzer:
             start_time = time.time()
             response_text = self._call_api_with_retry(prompt, generation_config)
             elapsed = time.time() - start_time
-            
+
             # 记录响应信息
             logger.info(f"[LLM返回] {api_type} API 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
             
             # 记录响应预览（INFO级别）和完整响应（DEBUG级别）
             response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
             logger.info(f"[LLM返回 预览]\n{response_preview}")
-            logger.debug(f"=== Gemini 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ===")
+            logger.debug(f"=== {api_type} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ===")
             
             # 解析响应
             result = self._parse_response(response_text, code, name)
@@ -1096,6 +1160,9 @@ class GeminiAnalyzer:
 
 请为 **{stock_name}({code})** 生成【决策仪表盘】，严格按照 JSON 格式输出。
 
+### ⚠️ 重要：股票名称确认
+如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
+
 ### 重点关注（必须明确回答）：
 1. ❓ 是否满足 MA5>MA10>MA20 多头排列？
 2. ❓ 当前乖离率是否在安全范围内（<5%）？—— 超过5%必须标注"严禁追高"
@@ -1104,6 +1171,7 @@ class GeminiAnalyzer:
 5. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
 
 ### 决策仪表盘要求：
+- **股票名称**：必须输出正确的中文全称（如"贵州茅台"而非"股票600519"）
 - **核心结论**：一句话说清该买/该卖/该等
 - **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
 - **具体狙击点位**：买入价、止损价、目标价（精确到分）
@@ -1169,8 +1237,24 @@ class GeminiAnalyzer:
                 
                 # 提取 dashboard 数据
                 dashboard = data.get('dashboard', None)
-                
+
+                # 优先使用 AI 返回的股票名称（如果原名称无效或包含代码）
+                ai_stock_name = data.get('stock_name')
+                if ai_stock_name and (name.startswith('股票') or name == code or 'Unknown' in name):
+                    name = ai_stock_name
+
                 # 解析所有字段，使用默认值防止缺失
+                # 解析 decision_type，如果没有则根据 operation_advice 推断
+                decision_type = data.get('decision_type', '')
+                if not decision_type:
+                    op = data.get('operation_advice', '持有')
+                    if op in ['买入', '加仓', '强烈买入']:
+                        decision_type = 'buy'
+                    elif op in ['卖出', '减仓', '强烈卖出']:
+                        decision_type = 'sell'
+                    else:
+                        decision_type = 'hold'
+                
                 return AnalysisResult(
                     code=code,
                     name=name,
@@ -1178,6 +1262,7 @@ class GeminiAnalyzer:
                     sentiment_score=int(data.get('sentiment_score', 50)),
                     trend_prediction=data.get('trend_prediction', '震荡'),
                     operation_advice=data.get('operation_advice', '持有'),
+                    decision_type=decision_type,
                     confidence_level=data.get('confidence_level', '中'),
                     # 决策仪表盘
                     dashboard=dashboard,
@@ -1259,10 +1344,14 @@ class GeminiAnalyzer:
             sentiment_score = 65
             trend = '看多'
             advice = '买入'
+            decision_type = 'buy'
         elif negative_count > positive_count + 1:
             sentiment_score = 35
             trend = '看空'
             advice = '卖出'
+            decision_type = 'sell'
+        else:
+            decision_type = 'hold'
         
         # 截取前500字符作为摘要
         summary = response_text[:500] if response_text else '无分析结果'
@@ -1273,6 +1362,7 @@ class GeminiAnalyzer:
             sentiment_score=sentiment_score,
             trend_prediction=trend,
             operation_advice=advice,
+            decision_type=decision_type,
             confidence_level='低',
             analysis_summary=summary,
             key_points='JSON解析失败，仅供参考',

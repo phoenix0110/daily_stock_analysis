@@ -22,6 +22,7 @@ import pandas as pd
 from src.config import get_config
 from data_provider.tushare_fetcher import TushareFetcher
 from src.search_service import SearchService
+from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
-    north_flow: float = 0.0             # 北向资金净流入（亿元）
+    # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
@@ -106,7 +107,7 @@ class MarketAnalyzer:
     ):
         """
         初始化大盘分析器
-        
+
         Args:
             search_service: 搜索服务实例
             analyzer: AI分析器实例（用于调用LLM）
@@ -115,8 +116,17 @@ class MarketAnalyzer:
         self.config = get_config()
         self.search_service = search_service
         self.analyzer = analyzer
-        # Tushare 作为备选数据源（当 AkShare 失败时使用）
+        self.data_manager = DataFetcherManager()
+        # Tushare 数据源（根据 priority 决定是否优先使用）
         self.tushare_fetcher = tushare_fetcher or TushareFetcher()
+        
+        # 判断是否优先使用 Tushare（当 Tushare 可用且优先级为 0 时）
+        self._prefer_tushare = (
+            self.tushare_fetcher.is_available and 
+            self.tushare_fetcher.priority == 0
+        )
+        if self._prefer_tushare:
+            logger.info("[大盘] 检测到 Tushare 配置，将优先使用 Tushare 数据源")
         
     def get_market_overview(self) -> MarketOverview:
         """
@@ -142,33 +152,50 @@ class MarketAnalyzer:
         
         return overview
 
-    def _call_akshare_with_retry(self, fn, name: str, attempts: int = 2):
-        last_error: Optional[Exception] = None
-        for attempt in range(1, attempts + 1):
-            try:
-                return fn()
-            except Exception as e:
-                last_error = e
-                logger.warning(f"[大盘] {name} 获取失败 (attempt {attempt}/{attempts}): {e}")
-                if attempt < attempts:
-                    time.sleep(min(2 ** attempt, 5))
-        logger.error(f"[大盘] {name} 最终失败: {last_error}")
-        return None
     
     def _get_main_indices(self) -> List[MarketIndex]:
         """
         获取主要指数实时行情
         
         数据源优先级：
-        1. AkShare (新浪财经接口)
-        2. Tushare (备选)
+        1. 如果 Tushare 配置了 Token 且可用（priority=0），优先使用 Tushare
+        2. 否则使用 AkShare，失败时回退到 Tushare
         """
         indices = []
         
-        try:
-            logger.info("[大盘] 获取主要指数实时行情...")
+        logger.info("[大盘] 获取主要指数实时行情...")
+        
+        # 如果优先使用 Tushare
+        if self._prefer_tushare:
+            logger.info("[大盘] 优先使用 Tushare 获取指数行情...")
+            indices = self._get_indices_from_tushare()
             
-            # 方式1：使用 akshare 获取指数行情（新浪财经接口，包含深市指数）
+            # Tushare 失败，回退到 AkShare
+            if not indices:
+                logger.warning("[大盘] Tushare 获取指数失败，切换到 AkShare...")
+                indices = self._get_indices_from_akshare()
+        else:
+            # 默认使用 AkShare
+            indices = self._get_indices_from_akshare()
+            
+            # AkShare 失败，回退到 Tushare
+            if not indices and self.tushare_fetcher and self.tushare_fetcher.is_available:
+                logger.warning("[大盘] AkShare 获取指数失败，切换到 Tushare 备选...")
+                indices = self._get_indices_from_tushare()
+        
+        return indices
+    
+    def _get_indices_from_akshare(self) -> List[MarketIndex]:
+        """
+        从 AkShare 获取指数行情
+        
+        Returns:
+            指数列表
+        """
+        indices = []
+
+        try:
+            # 使用 akshare 获取指数行情（新浪财经接口，包含深市指数）
             df = self._call_akshare_with_retry(ak.stock_zh_index_spot_sina, "指数行情", attempts=2)
             
             if df is not None and not df.empty:
@@ -199,19 +226,10 @@ class MarketAnalyzer:
                             index.amplitude = (index.high - index.low) / index.prev_close * 100
                         indices.append(index)
                         
-                logger.info(f"[大盘] 获取到 {len(indices)} 个指数行情")
-            
-            # 方式2：AkShare 失败，尝试使用 Tushare 备选
-            if not indices and self.tushare_fetcher and self.tushare_fetcher.is_available:
-                logger.warning("[大盘] AkShare 获取指数失败，切换到 Tushare 备选...")
-                indices = self._get_indices_from_tushare()
+                logger.info(f"[大盘] AkShare 获取到 {len(indices)} 个指数行情")
                 
         except Exception as e:
-            logger.error(f"[大盘] 获取指数行情失败: {e}")
-            # 尝试 Tushare 备选
-            if self.tushare_fetcher and self.tushare_fetcher.is_available:
-                logger.info("[大盘] 尝试使用 Tushare 备选获取指数...")
-                indices = self._get_indices_from_tushare()
+            logger.error(f"[大盘] AkShare 获取指数行情失败: {e}")
         
         return indices
     
@@ -259,15 +277,43 @@ class MarketAnalyzer:
         获取市场涨跌统计
         
         数据源优先级：
-        1. AkShare (东方财富接口)
-        2. Tushare (备选)
+        1. 如果 Tushare 配置了 Token 且可用（priority=0），优先使用 Tushare
+        2. 否则使用 AkShare，失败时回退到 Tushare
         """
-        akshare_success = False
+        logger.info("[大盘] 获取市场涨跌统计...")
         
-        try:
-            logger.info("[大盘] 获取市场涨跌统计...")
+        success = False
+        
+        # 如果优先使用 Tushare
+        if self._prefer_tushare:
+            logger.info("[大盘] 优先使用 Tushare 获取涨跌统计...")
+            success = self._get_market_statistics_from_tushare(overview)
             
-            # 方式1：获取全部A股实时行情（AkShare）
+            # Tushare 失败，回退到 AkShare
+            if not success:
+                logger.warning("[大盘] Tushare 获取涨跌统计失败，切换到 AkShare...")
+                success = self._get_market_statistics_from_akshare(overview)
+        else:
+            # 默认使用 AkShare
+            success = self._get_market_statistics_from_akshare(overview)
+            
+            # AkShare 失败，回退到 Tushare
+            if not success and self.tushare_fetcher and self.tushare_fetcher.is_available:
+                logger.warning("[大盘] AkShare 获取涨跌统计失败，切换到 Tushare 备选...")
+                self._get_market_statistics_from_tushare(overview)
+    
+    def _get_market_statistics_from_akshare(self, overview: MarketOverview) -> bool:
+        """
+        从 AkShare 获取市场涨跌统计
+        
+        Args:
+            overview: 市场概览对象，会被修改
+            
+        Returns:
+            是否获取成功
+        """
+        try:
+            # 获取全部A股实时行情（AkShare）
             df = self._call_akshare_with_retry(ak.stock_zh_a_spot_em, "A股实时行情", attempts=2)
             
             if df is not None and not df.empty:
@@ -289,25 +335,25 @@ class MarketAnalyzer:
                     df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
                     overview.total_amount = df[amount_col].sum() / 1e8  # 转为亿元
                 
-                akshare_success = True
-                logger.info(f"[大盘] 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
+                logger.info(f"[大盘] AkShare 涨跌统计: 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
                           f"涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count} "
                           f"成交额:{overview.total_amount:.0f}亿")
+                return True
                 
         except Exception as e:
             logger.error(f"[大盘] AkShare 获取涨跌统计失败: {e}")
         
-        # 方式2：AkShare 失败，尝试 Tushare 备选
-        if not akshare_success and self.tushare_fetcher and self.tushare_fetcher.is_available:
-            logger.warning("[大盘] AkShare 获取涨跌统计失败，切换到 Tushare 备选...")
-            self._get_market_statistics_from_tushare(overview)
+        return False
     
-    def _get_market_statistics_from_tushare(self, overview: MarketOverview):
+    def _get_market_statistics_from_tushare(self, overview: MarketOverview) -> bool:
         """
-        从 Tushare 获取市场涨跌统计（备选方案）
+        从 Tushare 获取市场涨跌统计
         
         Args:
             overview: 市场概览对象，会被修改
+            
+        Returns:
+            是否获取成功
         """
         try:
             stats = self.tushare_fetcher.get_market_daily_stats()
@@ -318,22 +364,62 @@ class MarketAnalyzer:
                 overview.flat_count = stats.get('flat_count', 0)
                 overview.limit_up_count = stats.get('limit_up_count', 0)
                 overview.limit_down_count = stats.get('limit_down_count', 0)
+                # 成交额（如果有的话）
+                if stats.get('total_amount'):
+                    overview.total_amount = stats.get('total_amount', 0)
                 
                 logger.info(f"[大盘] Tushare 涨跌统计: 涨:{overview.up_count} 跌:{overview.down_count} "
                           f"平:{overview.flat_count} 涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count}")
+                return True
         except Exception as e:
             logger.error(f"[大盘] Tushare 获取涨跌统计失败: {e}")
+        
+        return False
     
     def _get_sector_rankings(self, overview: MarketOverview):
         """
         获取板块涨跌榜
         
-        注意：板块行情数据只有 AkShare 支持，Tushare 的板块接口需要较高积分
-        如果获取失败，报告中将不显示板块信息（不影响核心功能）
+        数据源优先级：
+        1. 如果 Tushare 配置了 Token 且可用（priority=0），优先使用 Tushare
+        2. 否则使用 AkShare，失败时回退到 Tushare
+        """
+        logger.info("[大盘] 获取板块涨跌榜...")
+        
+        success = False
+        
+        # 如果优先使用 Tushare
+        if self._prefer_tushare:
+            logger.info("[大盘] 优先使用 Tushare 获取板块涨跌榜...")
+            success = self._get_sector_rankings_from_tushare(overview)
+            
+            # Tushare 失败，回退到 AkShare
+            if not success:
+                logger.warning("[大盘] Tushare 获取板块失败，切换到 AkShare...")
+                success = self._get_sector_rankings_from_akshare(overview)
+        else:
+            # 默认使用 AkShare
+            success = self._get_sector_rankings_from_akshare(overview)
+            
+            # AkShare 失败，回退到 Tushare
+            if not success and self.tushare_fetcher and self.tushare_fetcher.is_available:
+                logger.warning("[大盘] AkShare 获取板块失败，切换到 Tushare 备选...")
+                success = self._get_sector_rankings_from_tushare(overview)
+        
+        if not success:
+            logger.warning("[大盘] 板块行情获取失败，报告中将不显示板块信息")
+    
+    def _get_sector_rankings_from_akshare(self, overview: MarketOverview) -> bool:
+        """
+        从 AkShare 获取板块涨跌榜
+        
+        Args:
+            overview: 市场概览对象，会被修改
+            
+        Returns:
+            是否获取成功
         """
         try:
-            logger.info("[大盘] 获取板块涨跌榜...")
-            
             # 获取行业板块行情
             df = self._call_akshare_with_retry(ak.stock_board_industry_name_em, "行业板块行情", attempts=2)
             
@@ -357,13 +443,46 @@ class MarketAnalyzer:
                         for _, row in bottom.iterrows()
                     ]
                     
-                    logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
-                    logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
-            else:
-                logger.warning("[大盘] 板块行情获取失败，报告中将不显示板块信息")
+                    logger.info(f"[大盘] AkShare 领涨板块: {[s['name'] for s in overview.top_sectors]}")
+                    logger.info(f"[大盘] AkShare 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+                    return True
                     
         except Exception as e:
-            logger.warning(f"[大盘] 获取板块涨跌榜失败: {e}，报告中将不显示板块信息")
+            logger.warning(f"[大盘] AkShare 获取板块涨跌榜失败: {e}")
+        
+        return False
+    
+    def _get_sector_rankings_from_tushare(self, overview: MarketOverview) -> bool:
+        """
+        从 Tushare 获取板块涨跌榜（使用同花顺板块指数）
+        
+        需要 6000 积分以上
+        
+        Args:
+            overview: 市场概览对象，会被修改
+            
+        Returns:
+            是否获取成功
+        """
+        try:
+            if not self.tushare_fetcher or not self.tushare_fetcher.is_available:
+                logger.warning("[大盘] Tushare 不可用，无法获取板块数据")
+                return False
+            
+            result = self.tushare_fetcher.get_sector_rankings()
+            
+            if result and result.get('top_sectors') and result.get('bottom_sectors'):
+                overview.top_sectors = result['top_sectors']
+                overview.bottom_sectors = result['bottom_sectors']
+                
+                logger.info(f"[大盘] Tushare 领涨板块: {[s['name'] for s in overview.top_sectors]}")
+                logger.info(f"[大盘] Tushare 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+                return True
+            
+        except Exception as e:
+            logger.warning(f"[大盘] Tushare 获取板块涨跌榜失败: {e}")
+        
+        return False
     
     # def _get_north_flow(self, overview: MarketOverview):
     #     """获取北向资金流入"""
@@ -399,13 +518,13 @@ class MarketAnalyzer:
         
         all_news = []
         today = datetime.now()
-        month_str = f"{today.year}年{today.month}月"
-        
+        date_str = today.strftime('%Y年%m月%d日')
+
         # 多维度搜索
         search_queries = [
-            f"A股 大盘 复盘 {month_str}",
-            f"股市 行情 分析 今日 {month_str}",
-            f"A股 市场 热点 板块 {month_str}",
+            "A股 大盘 复盘",
+            "股市 行情 分析",
+            "A股 市场 热点 板块",
         ]
         
         try:
@@ -503,7 +622,7 @@ class MarketAnalyzer:
                 snippet = n.get('snippet', '')[:100]
             news_text += f"{i}. {title}\n   {snippet}\n"
         
-        prompt = f"""你是一位专业的A股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
+        prompt = f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
 
 【重要】输出要求：
 - 必须输出纯 Markdown 文本格式
@@ -525,7 +644,6 @@ class MarketAnalyzer:
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元
-- 北向资金: {overview.north_flow:+.2f} 亿元
 
 ## 板块表现
 领涨: {top_sectors_text}
@@ -547,7 +665,7 @@ class MarketAnalyzer:
 （分析上证、深证、创业板等各指数走势特点）
 
 ### 三、资金动向
-（解读成交额和北向资金流向的含义）
+（解读成交额流向的含义）
 
 ### 四、热点解读
 （分析领涨领跌板块背后的逻辑和驱动因素）
@@ -607,7 +725,6 @@ class MarketAnalyzer:
 | 涨停 | {overview.limit_up_count} |
 | 跌停 | {overview.limit_down_count} |
 | 两市成交额 | {overview.total_amount:.0f}亿 |
-| 北向资金 | {overview.north_flow:+.2f}亿 |
 
 ### 四、板块表现
 - **领涨**: {top_text}

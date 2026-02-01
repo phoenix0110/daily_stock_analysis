@@ -19,8 +19,40 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from itertools import cycle
+import requests
+from newspaper import Article, Config
 
 logger = logging.getLogger(__name__)
+
+
+def fetch_url_content(url: str, timeout: int = 5) -> str:
+    """
+    获取 URL 网页正文内容 (使用 newspaper3k)
+    """
+    try:
+        # 配置 newspaper3k
+        config = Config()
+        config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        config.request_timeout = timeout
+        config.fetch_images = False  # 不下载图片
+        config.memoize_articles = False # 不缓存
+
+        article = Article(url, config=config, language='zh') # 默认中文，但也支持其他
+        article.download()
+        article.parse()
+
+        # 获取正文
+        text = article.text.strip()
+
+        # 简单的后处理，去除空行
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        text = '\n'.join(lines)
+
+        return text[:1500]  # 限制返回长度（比 bs4 稍微多一点，因为 newspaper 解析更干净）
+    except Exception as e:
+        logger.debug(f"Fetch content failed for {url}: {e}")
+
+    return ""
 
 
 @dataclass
@@ -120,17 +152,18 @@ class BaseSearchProvider(ABC):
         logger.warning(f"[{self._name}] API Key {key[:8]}... 错误计数: {self._key_errors[key]}")
     
     @abstractmethod
-    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行搜索（子类实现）"""
         pass
     
-    def search(self, query: str, max_results: int = 5) -> SearchResponse:
+    def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
         """
         执行搜索
         
         Args:
             query: 搜索关键词
             max_results: 最大返回结果数
+            days: 搜索最近几天的时间范围（默认7天）
             
         Returns:
             SearchResponse 对象
@@ -147,7 +180,7 @@ class BaseSearchProvider(ABC):
         
         start_time = time.time()
         try:
-            response = self._do_search(query, api_key, max_results)
+            response = self._do_search(query, api_key, max_results, days=days)
             response.search_time = time.time() - start_time
             
             if response.success:
@@ -187,7 +220,7 @@ class TavilySearchProvider(BaseSearchProvider):
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "Tavily")
     
-    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行 Tavily 搜索"""
         try:
             from tavily import TavilyClient
@@ -203,14 +236,14 @@ class TavilySearchProvider(BaseSearchProvider):
         try:
             client = TavilyClient(api_key=api_key)
             
-            # 执行搜索（优化：使用advanced深度、限制最近7天）
+            # 执行搜索（优化：使用advanced深度、限制最近几天）
             response = client.search(
                 query=query,
                 search_depth="advanced",  # advanced 获取更多结果
                 max_results=max_results,
                 include_answer=False,
                 include_raw_content=False,
-                days=7,  # 只搜索最近7天的内容
+                days=days,  # 搜索最近天数的内容
             )
             
             # 记录原始响应到日志
@@ -270,13 +303,13 @@ class SerpAPISearchProvider(BaseSearchProvider):
     - 免费版每月 100 次请求
     - 返回真实的搜索结果
     
-    文档：https://serpapi.com/
+    文档：https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis
     """
     
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "SerpAPI")
     
-    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行 SerpAPI 搜索"""
         try:
             from serpapi import GoogleSearch
@@ -290,11 +323,27 @@ class SerpAPISearchProvider(BaseSearchProvider):
             )
         
         try:
-            # 使用百度搜索（对中文股票新闻更友好）
+            # 确定时间范围参数 tbs
+            tbs = "qdr:w"  # 默认一周
+            if days <= 1:
+                tbs = "qdr:d"  # 过去24小时
+            elif days <= 7:
+                tbs = "qdr:w"  # 过去一周
+            elif days <= 30:
+                tbs = "qdr:m"  # 过去一月
+            else:
+                tbs = "qdr:y"  # 过去一年
+
+            # 使用 Google 搜索 (获取 Knowledge Graph, Answer Box 等)
             params = {
-                "engine": "baidu",  # 使用百度搜索
+                "engine": "google",
                 "q": query,
                 "api_key": api_key,
+                "google_domain": "google.com.hk", # 使用香港谷歌，中文支持较好
+                "hl": "zh-cn",  # 中文界面
+                "gl": "cn",     # 中国地区偏好
+                "tbs": tbs,     # 时间范围限制
+                "num": max_results # 请求的结果数量，注意：Google API有时不严格遵守
             }
             
             search = GoogleSearch(params)
@@ -305,17 +354,122 @@ class SerpAPISearchProvider(BaseSearchProvider):
             
             # 解析结果
             results = []
-            organic_results = response.get('organic_results', [])
             
+            # 1. 解析 Knowledge Graph (知识图谱)
+            kg = response.get('knowledge_graph', {})
+            if kg:
+                title = kg.get('title', '知识图谱')
+                desc = kg.get('description', '')
+                
+                # 提取额外属性
+                details = []
+                for key in ['type', 'founded', 'headquarters', 'employees', 'ceo']:
+                    val = kg.get(key)
+                    if val:
+                        details.append(f"{key}: {val}")
+                        
+                snippet = f"{desc}\n" + " | ".join(details) if details else desc
+                
+                results.append(SearchResult(
+                    title=f"[知识图谱] {title}",
+                    snippet=snippet,
+                    url=kg.get('source', {}).get('link', ''),
+                    source="Google Knowledge Graph"
+                ))
+                
+            # 2. 解析 Answer Box (精选回答/行情卡片)
+            ab = response.get('answer_box', {})
+            if ab:
+                ab_title = ab.get('title', '精选回答')
+                ab_snippet = ""
+                
+                # 财经类回答
+                if ab.get('type') == 'finance_results':
+                    stock = ab.get('stock', '')
+                    price = ab.get('price', '')
+                    currency = ab.get('currency', '')
+                    movement = ab.get('price_movement', {})
+                    mv_val = movement.get('percentage', 0)
+                    mv_dir = movement.get('movement', '')
+                    
+                    ab_title = f"[行情卡片] {stock}"
+                    ab_snippet = f"价格: {price} {currency}\n涨跌: {mv_dir} {mv_val}%"
+                    
+                    # 提取表格数据
+                    if 'table' in ab:
+                        table_data = []
+                        for row in ab['table']:
+                            if 'name' in row and 'value' in row:
+                                table_data.append(f"{row['name']}: {row['value']}")
+                        if table_data:
+                            ab_snippet += "\n" + "; ".join(table_data)
+                            
+                # 普通文本回答
+                elif 'snippet' in ab:
+                    ab_snippet = ab.get('snippet', '')
+                    list_items = ab.get('list', [])
+                    if list_items:
+                        ab_snippet += "\n" + "\n".join([f"- {item}" for item in list_items])
+                
+                elif 'answer' in ab:
+                    ab_snippet = ab.get('answer', '')
+                    
+                if ab_snippet:
+                    results.append(SearchResult(
+                        title=f"[精选回答] {ab_title}",
+                        snippet=ab_snippet,
+                        url=ab.get('link', '') or ab.get('displayed_link', ''),
+                        source="Google Answer Box"
+                    ))
+
+            # 3. 解析 Related Questions (相关问题)
+            rqs = response.get('related_questions', [])
+            for rq in rqs[:3]: # 取前3个
+                question = rq.get('question', '')
+                snippet = rq.get('snippet', '')
+                link = rq.get('link', '')
+                
+                if question and snippet:
+                     results.append(SearchResult(
+                        title=f"[相关问题] {question}",
+                        snippet=snippet,
+                        url=link,
+                        source="Google Related Questions"
+                     ))
+
+            # 4. 解析 Organic Results (自然搜索结果)
+            organic_results = response.get('organic_results', [])
+
             for item in organic_results[:max_results]:
+                link = item.get('link', '')
+                snippet = item.get('snippet', '')
+
+                # 增强：如果需要，解析网页正文
+                # 策略：如果摘要太短，或者为了获取更多信息，可以请求网页
+                # 这里我们对所有结果尝试获取正文，但为了性能，仅获取前1000字符
+                content = ""
+                if link:
+                   try:
+                       fetched_content = fetch_url_content(link, timeout=5)
+                       if fetched_content:
+                           # 如果获取到了正文，将其拼接到 snippet 中，或者替换 snippet
+                           # 这里选择拼接，保留原摘要
+                           content = fetched_content
+                           if len(content) > 500:
+                               snippet = f"{snippet}\n\n【网页详情】\n{content[:500]}..."
+                           else:
+                               snippet = f"{snippet}\n\n【网页详情】\n{content}"
+                   except Exception as e:
+                       logger.debug(f"[SerpAPI] Fetch content failed: {e}")
+
                 results.append(SearchResult(
                     title=item.get('title', ''),
-                    snippet=item.get('snippet', '')[:500],
-                    url=item.get('link', ''),
-                    source=item.get('source', self._extract_domain(item.get('link', ''))),
+                    snippet=snippet[:1000], # 限制总长度
+                    url=link,
+                    source=item.get('source', self._extract_domain(link)),
                     published_date=item.get('date'),
                 ))
-            
+
             return SearchResponse(
                 query=query,
                 results=results,
@@ -360,7 +514,7 @@ class BochaSearchProvider(BaseSearchProvider):
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "Bocha")
     
-    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行博查搜索"""
         try:
             import requests
@@ -383,10 +537,21 @@ class BochaSearchProvider(BaseSearchProvider):
                 'Content-Type': 'application/json'
             }
             
+            # 确定时间范围
+            freshness = "oneWeek"
+            if days <= 1:
+                freshness = "oneDay"
+            elif days <= 7:
+                freshness = "oneWeek"
+            elif days <= 30:
+                freshness = "oneMonth"
+            else:
+                freshness = "oneYear"
+
             # 请求参数（严格按照API文档）
             payload = {
                 "query": query,
-                "freshness": "oneMonth",  # 搜索近一个月，适合捕获财报、公告等信息
+                "freshness": freshness,  # 动态时间范围
                 "summary": True,  # 启用AI摘要
                 "count": min(max_results, 50)  # 最大50条
             }
@@ -538,7 +703,17 @@ class SearchService:
     1. 管理多个搜索引擎
     2. 自动故障转移
     3. 结果聚合和格式化
+    4. 数据源失败时的增强搜索（股价、走势等）
     """
+    
+    # 增强搜索关键词模板
+    ENHANCED_SEARCH_KEYWORDS = [
+        "{name} 股票 今日 股价",
+        "{name} {code} 最新 行情 走势",
+        "{name} 股票 分析 走势图",
+        "{name} K线 技术分析",
+        "{name} {code} 涨跌 成交量",
+    ]
     
     def __init__(
         self,
@@ -599,28 +774,35 @@ class SearchService:
         Returns:
             SearchResponse 对象
         """
-        # 默认重点关注关键词（基于交易理念）
-        if focus_keywords is None:
-            focus_keywords = [
-                "年报预告", "业绩预告", "业绩快报",  # 业绩相关
-                "减持", "增持", "回购",              # 股东动向
-                "机构调研", "机构评级",              # 机构动向
-                "利好", "利空",                      # 消息面
-                "合同", "订单", "中标",              # 业务进展
-            ]
-        
+        # 智能确定搜索时间范围
+        # 策略：
+        # 1. 周二至周五：搜索近1天（24小时）
+        # 2. 周六、周日：搜索近2-3天（覆盖周末）
+        # 3. 周一：搜索近3天（覆盖周末）
+        today_weekday = datetime.now().weekday()
+        if today_weekday == 0: # 周一
+            search_days = 3
+        elif today_weekday >= 5: # 周六(5)、周日(6)
+            search_days = 2
+        else: # 周二(1) - 周五(4)
+            search_days = 1
+
         # 构建搜索查询（优化搜索效果）
-        # 主查询：股票名称 + 核心关键词
-        query = f"{stock_name} {stock_code} 股票 最新消息"
-        
-        logger.info(f"搜索股票新闻: {stock_name}({stock_code})")
+        if focus_keywords:
+            # 如果提供了关键词，直接使用关键词作为查询
+            query = " ".join(focus_keywords)
+        else:
+            # 默认主查询：股票名称 + 核心关键词
+            query = f"{stock_name} {stock_code} 股票 最新消息"
+
+        logger.info(f"搜索股票新闻: {stock_name}({stock_code}), query='{query}', 时间范围: 近{search_days}天")
         
         # 依次尝试各个搜索引擎
         for provider in self._providers:
             if not provider.is_available:
                 continue
             
-            response = provider.search(query, max_results)
+            response = provider.search(query, max_results, days=search_days)
             
             if response.success and response.results:
                 logger.info(f"使用 {provider.name} 搜索成功")
@@ -712,18 +894,28 @@ class SearchService:
         search_dimensions = [
             {
                 'name': 'latest_news',
-                'query': f"{stock_name} {stock_code} 最新 新闻 2026年1月",
+                'query': f"{stock_name} {stock_code} 最新 新闻 重大 事件",
                 'desc': '最新消息'
             },
             {
+                'name': 'market_analysis',
+                'query': f"{stock_name} 研报 目标价 评级 深度分析",
+                'desc': '机构分析'
+            },
+            {
                 'name': 'risk_check', 
-                'query': f"{stock_name} 减持 处罚 利空 风险",
+                'query': f"{stock_name} 减持 处罚 违规 诉讼 利空 风险",
                 'desc': '风险排查'
             },
             {
                 'name': 'earnings',
-                'query': f"{stock_name} 年报预告 业绩预告 业绩快报 2025年报",
+                'query': f"{stock_name} 业绩预告 财报 营收 净利润 同比增长",
                 'desc': '业绩预期'
+            },
+            {
+                'name': 'industry',
+                'query': f"{stock_name} 所在行业 竞争对手 市场份额 行业前景",
+                'desc': '行业分析'
             },
         ]
         
@@ -773,39 +965,34 @@ class SearchService:
         """
         lines = [f"【{stock_name} 情报搜索结果】"]
         
-        # 最新消息
-        if 'latest_news' in intel_results:
-            resp = intel_results['latest_news']
-            lines.append(f"\n📰 最新消息 (来源: {resp.provider}):")
+        # 维度展示顺序
+        display_order = ['latest_news', 'market_analysis', 'risk_check', 'earnings', 'industry']
+        
+        for dim_name in display_order:
+            if dim_name not in intel_results:
+                continue
+                
+            resp = intel_results[dim_name]
+            
+            # 获取维度描述
+            dim_desc = dim_name
+            if dim_name == 'latest_news': dim_desc = '📰 最新消息'
+            elif dim_name == 'market_analysis': dim_desc = '📈 机构分析'
+            elif dim_name == 'risk_check': dim_desc = '⚠️ 风险排查'
+            elif dim_name == 'earnings': dim_desc = '📊 业绩预期'
+            elif dim_name == 'industry': dim_desc = '🏭 行业分析'
+            
+            lines.append(f"\n{dim_desc} (来源: {resp.provider}):")
             if resp.success and resp.results:
-                for i, r in enumerate(resp.results[:3], 1):
+                # 增加显示条数
+                for i, r in enumerate(resp.results[:4], 1):
                     date_str = f" [{r.published_date}]" if r.published_date else ""
                     lines.append(f"  {i}. {r.title}{date_str}")
-                    lines.append(f"     {r.snippet[:100]}...")
+                    # 如果摘要太短，可能信息量不足
+                    snippet = r.snippet[:150] if len(r.snippet) > 20 else r.snippet
+                    lines.append(f"     {snippet}...")
             else:
-                lines.append("  未找到相关消息")
-        
-        # 风险排查
-        if 'risk_check' in intel_results:
-            resp = intel_results['risk_check']
-            lines.append(f"\n⚠️ 风险排查 (来源: {resp.provider}):")
-            if resp.success and resp.results:
-                for i, r in enumerate(resp.results[:3], 1):
-                    lines.append(f"  {i}. {r.title}")
-                    lines.append(f"     {r.snippet[:100]}...")
-            else:
-                lines.append("  未发现明显风险信号")
-        
-        # 业绩预期
-        if 'earnings' in intel_results:
-            resp = intel_results['earnings']
-            lines.append(f"\n📊 业绩预期 (来源: {resp.provider}):")
-            if resp.success and resp.results:
-                for i, r in enumerate(resp.results[:3], 1):
-                    lines.append(f"  {i}. {r.title}")
-                    lines.append(f"     {r.snippet[:100]}...")
-            else:
-                lines.append("  未找到业绩相关信息")
+                lines.append("  未找到相关信息")
         
         return "\n".join(lines)
     
@@ -816,15 +1003,15 @@ class SearchService:
         delay_between: float = 1.0
     ) -> Dict[str, SearchResponse]:
         """
-        批量搜索多只股票新闻
+        Batch search news for multiple stocks.
         
         Args:
-            stocks: 股票列表 [{"code": "300389", "name": "艾比森"}, ...]
-            max_results_per_stock: 每只股票的最大结果数
-            delay_between: 每次搜索之间的延迟（秒）
+            stocks: List of stocks
+            max_results_per_stock: Max results per stock
+            delay_between: Delay between searches (seconds)
             
         Returns:
-            {股票代码: SearchResponse} 字典
+            Dict of results
         """
         results = {}
         
@@ -839,6 +1026,180 @@ class SearchService:
             results[code] = response
         
         return results
+
+    def search_stock_price_fallback(
+        self,
+        stock_code: str,
+        stock_name: str,
+        max_attempts: int = 3,
+        max_results: int = 5
+    ) -> SearchResponse:
+        """
+        Enhance search when data sources fail.
+        
+        When all data sources (efinance, akshare, tushare, baostock, etc.) fail to get
+        stock data, use search engines to find stock trends and price info as supplemental data for AI analysis.
+        
+        Strategy:
+        1. Search using multiple keyword templates
+        2. Try all available search engines for each keyword
+        3. Aggregate and deduplicate results
+        
+        Args:
+            stock_code: Stock Code
+            stock_name: Stock Name
+            max_attempts: Max search attempts (using different keywords)
+            max_results: Max results to return
+            
+        Returns:
+            SearchResponse object with aggregated results
+        """
+
+        if not self.is_available:
+            return SearchResponse(
+                query=f"{stock_name} 股价走势",
+                results=[],
+                provider="None",
+                success=False,
+                error_message="未配置搜索引擎 API Key"
+            )
+        
+        logger.info(f"[增强搜索] 数据源失败，启动增强搜索: {stock_name}({stock_code})")
+        
+        all_results = []
+        seen_urls = set()
+        successful_providers = []
+        
+        # 使用多个关键词模板搜索
+        for i, keyword_template in enumerate(self.ENHANCED_SEARCH_KEYWORDS[:max_attempts]):
+            query = keyword_template.format(name=stock_name, code=stock_code)
+            
+            logger.info(f"[增强搜索] 第 {i+1}/{max_attempts} 次搜索: {query}")
+            
+            # 依次尝试各个搜索引擎
+            for provider in self._providers:
+                if not provider.is_available:
+                    continue
+                
+                try:
+                    response = provider.search(query, max_results=3)
+                    
+                    if response.success and response.results:
+                        # 去重并添加结果
+                        for result in response.results:
+                            if result.url not in seen_urls:
+                                seen_urls.add(result.url)
+                                all_results.append(result)
+                                
+                        if provider.name not in successful_providers:
+                            successful_providers.append(provider.name)
+                        
+                        logger.info(f"[增强搜索] {provider.name} 返回 {len(response.results)} 条结果")
+                        break  # 成功后跳到下一个关键词
+                    else:
+                        logger.debug(f"[增强搜索] {provider.name} 无结果或失败")
+                        
+                except Exception as e:
+                    logger.warning(f"[增强搜索] {provider.name} 搜索异常: {e}")
+                    continue
+            
+            # 短暂延迟避免请求过快
+            if i < max_attempts - 1:
+                time.sleep(0.5)
+        
+        # 汇总结果
+        if all_results:
+            # 截取前 max_results 条
+            final_results = all_results[:max_results]
+            provider_str = ", ".join(successful_providers) if successful_providers else "None"
+            
+            logger.info(f"[增强搜索] 完成，共获取 {len(final_results)} 条结果（来源: {provider_str}）")
+            
+            return SearchResponse(
+                query=f"{stock_name}({stock_code}) 股价走势",
+                results=final_results,
+                provider=provider_str,
+                success=True,
+            )
+        else:
+            logger.warning(f"[增强搜索] 所有搜索均未返回结果")
+            return SearchResponse(
+                query=f"{stock_name}({stock_code}) 股价走势",
+                results=[],
+                provider="None",
+                success=False,
+                error_message="增强搜索未找到相关信息"
+            )
+
+    def search_stock_with_enhanced_fallback(
+        self,
+        stock_code: str,
+        stock_name: str,
+        include_news: bool = True,
+        include_price: bool = False,
+        max_results: int = 5
+    ) -> Dict[str, SearchResponse]:
+        """
+        综合搜索接口（支持新闻和股价信息）
+        
+        当 include_price=True 时，会同时搜索新闻和股价信息。
+        主要用于数据源完全失败时的兜底方案。
+        
+        Args:
+            stock_code: 股票代码
+            stock_name: 股票名称
+            include_news: 是否搜索新闻
+            include_price: 是否搜索股价/走势信息
+            max_results: 每类搜索的最大结果数
+            
+        Returns:
+            {'news': SearchResponse, 'price': SearchResponse} 字典
+        """
+        results = {}
+        
+        if include_news:
+            results['news'] = self.search_stock_news(
+                stock_code, 
+                stock_name, 
+                max_results=max_results
+            )
+        
+        if include_price:
+            results['price'] = self.search_stock_price_fallback(
+                stock_code,
+                stock_name,
+                max_attempts=3,
+                max_results=max_results
+            )
+        
+        return results
+
+    def format_price_search_context(self, response: SearchResponse) -> str:
+        """
+        将股价搜索结果格式化为 AI 分析上下文
+        
+        Args:
+            response: 搜索响应对象
+            
+        Returns:
+            格式化的文本，可直接用于 AI 分析
+        """
+        if not response.success or not response.results:
+            return "【股价走势搜索】未找到相关信息，请以其他渠道数据为准。"
+        
+        lines = [
+            f"【股价走势搜索结果】（来源: {response.provider}）",
+            "⚠️ 注意：以下信息来自网络搜索，仅供参考，可能存在延迟或不准确。",
+            ""
+        ]
+        
+        for i, result in enumerate(response.results, 1):
+            date_str = f" [{result.published_date}]" if result.published_date else ""
+            lines.append(f"{i}. 【{result.source}】{result.title}{date_str}")
+            lines.append(f"   {result.snippet[:200]}...")
+            lines.append("")
+        
+        return "\n".join(lines)
 
 
 # === 便捷函数 ===
