@@ -1,16 +1,21 @@
 <div align="center">
 
-# 📈 AI Stock Analysis System
+# AI Stock Analysis System
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/daily_stock_analysis?style=social)](https://github.com/ZhuLinsen/daily_stock_analysis/stargazers)
 [![CI](https://github.com/ZhuLinsen/daily_stock_analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/daily_stock_analysis/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Ready-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/)
 
-> 🤖 AI-powered stock analysis system for A-shares, Hong Kong stocks, and US stocks. Automatically analyzes your watchlist daily and sends "Decision Dashboard" to WeChat Work/Feishu/Telegram/Email
+**AI-powered stock analysis system for A-shares / Hong Kong / US stocks**
 
-[**Key Features**](#-key-features) • [**Deployment**](DEPLOY.md) • [**Sample Output**](#-sample-output) • [**Usage Guide**](full-guide.md) • [**Changelog**](CHANGELOG.md)
+Analyze your watchlist daily → generate a decision dashboard → push to multiple channels (Telegram/Discord/Email/WeChat Work/Feishu)
+
+**Zero-cost deployment** · Runs on GitHub Actions · No server required
+
+[**Quick Start**](#-quick-start) · [**Key Features**](#-key-features) · [**Sample Output**](#-sample-output) · [**Full Guide**](full-guide_EN.md) · [**FAQ**](FAQ_EN.md) · [**Changelog**](CHANGELOG.md)
 
 English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
@@ -27,32 +32,31 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 ## ✨ Key Features
 
-### 🎯 Core Capabilities
-- **AI Decision Dashboard** - One-sentence core conclusion + precise entry/exit points + checklist
-- **Multi-dimensional Analysis** - Technical analysis + chip distribution + sentiment intelligence + real-time quotes
-- **Market Review** - Daily market overview, sector performance, northbound capital flow
-- **Multi-channel Push** - Support WeChat Work, Feishu, Telegram, Email (auto-detection)
-- **Zero-cost Deployment** - Free to run on GitHub Actions, no server required
-- **💰 Free Gemini API** - Google AI Studio provides free quota, sufficient for personal use
-- **🔄 Multi-model Support** - Supports OpenAI-compatible APIs (DeepSeek, Qwen, etc.) as backup
+| Module | Feature | Description |
+|--------|---------|-------------|
+| AI | Decision Dashboard | One-sentence conclusion + precise entry/exit levels + action checklist |
+| Analysis | Multi-dimensional Analysis | Technicals + chip distribution + sentiment + real-time quotes |
+| Market | Global Markets | A-shares, Hong Kong stocks, US stocks |
+| Review | Market Review | Daily overview, sectors, northbound capital flow |
+| Notifications | Multi-channel Push | Telegram, Discord, Email, WeChat Work, Feishu, etc. |
+| Automation | Scheduled Runs | GitHub Actions scheduled execution, no server required |
 
-### 📊 Data Sources
-- **Market Data**: AkShare (free), Tushare, Baostock, YFinance
-- **News Search**: Tavily, SerpAPI, Bocha
-- **AI Analysis**: 
-  - Primary: Google Gemini (gemini-3-flash-preview) — [Get it free](https://aistudio.google.com/)
-  - Backup: OpenAI-compatible API (DeepSeek, Qwen, Moonshot, etc.)
+### Tech Stack & Data Sources
 
-### 🌍 Supported Markets
-- **A-shares** - Shanghai & Shenzhen Stock Exchanges
-- **Hong Kong Stocks** - HKEX
-- **US Stocks** - NYSE, NASDAQ
+| Type | Supported |
+|------|----------|
+| LLMs | Gemini (free), OpenAI-compatible, DeepSeek, Qwen, Claude, Ollama |
+| Market Data | AkShare, Tushare, Pytdx, Baostock, YFinance |
+| News Search | Tavily, SerpAPI, Bocha, Brave |
 
-### 🛡️ Built-in Trading Philosophy
-- ❌ **No Chasing Highs** - Auto mark "Danger" when price deviation > 5%
-- ✅ **Trend Trading** - Only trade in bull alignment (MA5 > MA10 > MA20)
-- 📍 **Precise Levels** - Entry price, stop loss, target price
-- 📋 **Checklist** - Every condition marked with ✅⚠️❌
+### Built-in Trading Rules
+
+| Rule | Description |
+|------|-------------|
+| No chasing highs | Auto warn when deviation > 5% |
+| Trend trading | Bull alignment: MA5 > MA10 > MA20 |
+| Precise levels | Entry, stop loss, target |
+| Checklist | Each condition marked as Pass / Watch / Fail |
 
 ## 🚀 Quick Start
 
@@ -60,7 +64,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 **No server needed, runs automatically every day!**
 
-#### 1. Fork this repository (⭐ Star it too!)
+#### 1. Fork this repository
 
 Click the `Fork` button in the upper right corner
 
@@ -79,21 +83,33 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 
 > *Note: Configure at least one of `GEMINI_API_KEY` or `OPENAI_API_KEY`
 
-**Notification Channel Configuration (Can configure multiple, all will receive notifications)**
+<details>
+<summary><b>Notification channels</b> (expand, choose at least one)</summary>
 
 | Secret Name | Description | Required |
 |------------|------|:----:|
-| `WECHAT_WEBHOOK_URL` | WeChat Work Webhook URL | Optional |
-| `FEISHU_WEBHOOK_URL` | Feishu Webhook URL | Optional |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token (Get from @BotFather) | Optional |
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | Optional |
+| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID (For sending to topics) | Optional |
+| `DISCORD_WEBHOOK_URL` | Discord Webhook URL | Optional |
+| `DISCORD_BOT_TOKEN` | Discord Bot Token (choose one with Webhook) | Optional |
+| `DISCORD_CHANNEL_ID` | Discord Channel ID (required when using Bot) | Optional |
 | `EMAIL_SENDER` | Sender email (e.g., `xxx@qq.com`) | Optional |
 | `EMAIL_PASSWORD` | Email authorization code (not login password) | Optional |
 | `EMAIL_RECEIVERS` | Receiver emails (comma-separated, leave empty to send to yourself) | Optional |
+| `WECHAT_WEBHOOK_URL` | WeChat Work Webhook URL | Optional |
+| `FEISHU_WEBHOOK_URL` | Feishu Webhook URL | Optional |
 | `PUSHPLUS_TOKEN` | PushPlus Token ([Get it here](https://www.pushplus.plus), Chinese push service) | Optional |
+| `SERVERCHAN3_SENDKEY` | ServerChan v3 SendKey (([Get it here](https://sc3.ft07.com/), Mobile app push notification service) ) | Optional |
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook URLs (supports DingTalk, etc., comma-separated) | Optional |
+| `CUSTOM_WEBHOOK_BEARER_TOKEN` | Bearer token for custom webhooks (if required) | Optional |
+| `SINGLE_STOCK_NOTIFY` | Send notification immediately after each stock | Optional |
+| `REPORT_TYPE` | `simple` or `full` (Docker recommended: `full`) | Optional |
+| `ANALYSIS_DELAY` | Delay between stocks and market review (seconds) | Optional |
 
-> *Note: Configure at least one channel, multiple channels will all receive notifications
+> Note: Configure at least one channel; multiple channels will all receive notifications.
+
+</details>
 
 **Stock List Configuration**
 
@@ -101,8 +117,11 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `STOCK_LIST` | Watchlist codes, e.g., `600519,AAPL,hk00700` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news) | Recommended |
+| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API (privacy-focused, US stocks optimized) | Optional |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) Backup search | Optional |
-| `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/) Token | Optional |
+| `BOCHA_API_KEYS` | [Bocha Search](https://open.bocha.cn/) Web Search API (Chinese search optimized, supports AI summaries, multiple keys comma-separated) | Optional |
+| `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | Optional |
+| `WECHAT_MSG_TYPE` | WeChat Work message type, default `markdown`, set to `text` for plain markdown text | Optional |
 
 **Stock Code Format**
 
@@ -192,31 +211,53 @@ python main.py --stocks AAPL,TSLA,GOOGL
 python main.py --market-review
 ```
 
+### API Endpoints
+
+| Endpoint | Method | Description |
+|------|------|------|
+| `/` | GET | Configuration page |
+| `/health` | GET | Health check |
+| `/analysis?code=xxx` | GET | Trigger async analysis for a single stock |
+| `/analysis/history` | GET | Query analysis history records |
+| `/tasks` | GET | Query all task statuses |
+| `/task?id=xxx` | GET | Query a single task status |
+
 ---
 
 ## 📱 Supported Notification Channels
 
-### 1️⃣ Telegram (Recommended for international users)
+### 1. Telegram (Recommended)
 
-1. Talk to [@BotFather](https://t.me/BotFather) → `/newbot` → Get Bot Token
-2. Get Chat ID: Send message to [@userinfobot](https://t.me/userinfobot)
+1. Talk to [@BotFather](https://t.me/BotFather) → `/newbot` → get Bot Token
+2. Get Chat ID: send a message to [@userinfobot](https://t.me/userinfobot)
 3. Configure:
-   ```bash
-   TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
-   TELEGRAM_CHAT_ID=123456789
-   ```
+  ```bash
+  TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+  TELEGRAM_CHAT_ID=123456789
+  ```
 
-### 2️⃣ Email (Universal)
+### 2. Discord
 
-1. Get authorization code (e.g., Gmail App Password)
-2. Configure:
-   ```bash
-   EMAIL_SENDER=your_email@gmail.com
-   EMAIL_PASSWORD=your_app_password
-   EMAIL_RECEIVERS=receiver@example.com  # Optional
-   ```
+Webhook:
+```bash
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
+```
 
-### 3️⃣ WeChat Work / Feishu (For Chinese users)
+Bot:
+```bash
+DISCORD_BOT_TOKEN=your_bot_token
+DISCORD_CHANNEL_ID=your_channel_id
+```
+
+### 3. Email
+
+```bash
+EMAIL_SENDER=your_email@gmail.com
+EMAIL_PASSWORD=your_app_password
+EMAIL_RECEIVERS=receiver@example.com  # Optional
+```
+
+### 4. WeChat Work / Feishu
 
 WeChat Work:
 ```bash
@@ -228,7 +269,7 @@ Feishu:
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
 ```
 
-### 4️⃣ PushPlus (Chinese mobile push)
+### 5. PushPlus
 
 ```bash
 PUSHPLUS_TOKEN=your_token_here
@@ -343,9 +384,24 @@ DEBUG=false                    # Enable debug logging
 
 ---
 
+## 🖥️ Local WebUI (Optional)
+
+```bash
+python main.py --webui       # Start WebUI + run analysis
+python main.py --webui-only  # Start WebUI only
+```
+
+Visit `http://127.0.0.1:8000` for configuration management, triggering analysis, and viewing task status.
+
+> For detailed instructions, see [Full Guide - WebUI](full-guide_EN.md#local-webui-management-interface)
+
+---
+
 ## 📖 Documentation
 
-- [Complete Configuration Guide](full-guide.md)
+- [Complete Configuration Guide](full-guide_EN.md)
+- [FAQ](FAQ_EN.md)
+- [Deployment Guide](DEPLOY_EN.md)
 - [Bot Command Reference](bot-command.md)
 - [Feishu Bot Setup](bot/feishu-bot-config.md)
 - [DingTalk Bot Setup](bot/dingding-bot-config.md)
@@ -423,4 +479,4 @@ The developers of this tool are not liable for any financial losses resulting fr
 - GitHub Issues: [Report bugs or request features](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
 - Discussions: [Join discussions](https://github.com/ZhuLinsen/daily_stock_analysis/discussions)
 
----
+----

@@ -22,6 +22,7 @@ lark-oapi>=1.0.0             # 飞书API
 # 数据处理
 pandas>=2.0.0               # 数据分析
 numpy>=1.24.0               # 数值计算
+json-repair>=0.55.1         # JSON 修复
 
 # AI 分析
 google-generativeai>=0.8.0  # Gemini API
@@ -46,3 +47,7 @@ discord.py>=2.0.0              # Discord 机器人开发库
 # Web Content Extraction
 newspaper3k>=0.2.8          # Article extraction
 lxml_html_clean             # Fix for lxml.html.clean ImportError in newer lxml versions
+
+# FastAPI Web 框架
+fastapi>=0.109.0            # 现代 Python Web 框架
+uvicorn[standard]>=0.27.0   # ASGI 服务器
