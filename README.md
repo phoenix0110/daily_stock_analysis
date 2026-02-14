@@ -34,6 +34,7 @@
 | 分析 | 多维度分析 | 技术面 + 筹码分布 + 舆情情报 + 实时行情 |
 | 市场 | 全球市场 | 支持 A股、港股、美股 |
 | 复盘 | 大盘复盘 | 每日市场概览、板块涨跌、北向资金 |
+| 回测 | AI 回测验证 | 自动评估历史分析准确率，方向胜率、止盈止损命中率 |
 | 推送 | 多渠道通知 | 企业微信、飞书、Telegram、钉钉、邮件、Pushover |
 | 自动化 | 定时运行 | GitHub Actions 定时执行，无需服务器 |
 
@@ -101,6 +102,8 @@
 | `EMAIL_SENDER` | 发件人邮箱（如 `xxx@qq.com`） | 可选 |
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（多个用逗号分隔，留空则发给自己） | 可选 |
+| `EMAIL_SENDER_NAME` | 邮件发件人显示名称（默认：daily_stock_analysis股票分析助手） | 可选 |
+| `STOCK_GROUP_N` / `EMAIL_GROUP_N` | 股票分组发往不同邮箱（如 `STOCK_GROUP_1=600519,300750` `EMAIL_GROUP_1=user1@example.com`） | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
@@ -157,30 +160,37 @@ python main.py
 
 ## 📱 推送效果
 
-![运行效果演示](./sources/all_2026-01-13_221547.gif)
-
 ### 决策仪表盘
 ```
-📊 2026-01-10 决策仪表盘
-3只股票 | 🟢买入:1 🟡观望:2 🔴卖出:0
+🎯 2026-02-08 决策仪表盘
+共分析3只股票 | 🟢买入:0 🟡观望:2 🔴卖出:1
 
-🟢 买入 | 贵州茅台(600519)
-📌 缩量回踩MA5支撑，乖离率1.2%处于最佳买点
-💰 狙击: 买入1800 | 止损1750 | 目标1900
-✅多头排列 ✅乖离安全 ✅量能配合
+📊 分析结果摘要
+⚪ 中钨高新(000657): 观望 | 评分 65 | 看多
+⚪ 永鼎股份(600105): 观望 | 评分 48 | 震荡
+🟡 新莱应材(300260): 卖出 | 评分 35 | 看空
 
-🟡 观望 | 宁德时代(300750)
-📌 乖离率7.8%超过5%警戒线，严禁追高
-⚠️ 等待回调至MA5附近再考虑
+⚪ 中钨高新 (000657)
+📰 重要信息速览
+💭 舆情情绪: 市场关注其AI属性与业绩高增长，情绪偏积极，但需消化短期获利盘和主力流出压力。
+📊 业绩预期: 基于舆情信息，公司2025年前三季度业绩同比大幅增长，基本面强劲，为股价提供支撑。
+
+🚨 风险警报:
+
+风险点1：2月5日主力资金大幅净卖出3.63亿元，需警惕短期抛压。
+风险点2：筹码集中度高达35.15%，表明筹码分散，拉升阻力可能较大。
+风险点3：舆情中提及公司历史违规记录及重组相关风险提示，需保持关注。
+✨ 利好催化:
+
+利好1：公司被市场定位为AI服务器HDI核心供应商，受益于AI产业发展。
+利好2：2025年前三季度扣非净利润同比暴涨407.52%，业绩表现强劲。
+📢 最新动态: 【最新消息】舆情显示公司是AI PCB微钻领域龙头，深度绑定全球头部PCB/载板厂。2月5日主力资金净卖出3.63亿元，需关注后续资金流向。
 
 ---
 生成时间: 18:00
 ```
 
 ### 大盘复盘
-
-![大盘复盘推送效果](./sources/dapan_2026-01-13_22-14-52.png)
-
 ```
 🎯 2026-01-10 大盘复盘
 
@@ -201,39 +211,30 @@ python main.py
 > 📖 完整环境变量、定时任务配置请参考 [完整配置指南](docs/full-guide.md)
 
 
-## 🖥️ 本地 WebUI（可选 - 将在后续的版本弃用）
-
-```bash
-python main.py --webui       # 启动 WebUI + 执行分析
-python main.py --webui-only  # 仅启动 WebUI
-```
-
-访问 `http://127.0.0.1:8000` 可进行配置管理、触发分析、查看任务状态。
-
-> 详细说明请参考 [完整指南 - WebUI](docs/full-guide.md#本地-webui-管理界面)
-
-## 🧩 FastAPI Web 服务（可选）
+## 🖥️ Web 界面
 
 ![img.png](sources/fastapi_server.png)
 
-```bash
-cd ./apps/dsa-web            # 进入 React Web 目录
-npm install
-npm run build                # 编译 React Web 页面 会在根目录生成 /static 文件夹
+包含完整的配置管理、任务监控和手动分析功能。
 
-cd ../..                     # 返回项目根目录
-python main.py --serve       # 启动 FastAPI + 执行分析
-python main.py --serve-only  # 仅启动 FastAPI
-python main.py --serve-only --host 0.0.0.0 --port 8000  # 指定启动端口
-```
+### 启动方式
 
-访问 `http://127.0.0.1:8000` 即可使用该页面（注意一定要执行 `npm install` 步骤，否则没有页面）
+1. **编译前端** (首次运行需要)
+   ```bash
+   cd ./apps/dsa-web
+   npm install && npm run build
+   cd ../..
+   ```
 
-也可以使用下面命令单独启动：
+2. **启动服务**
+   ```bash
+   python main.py --webui       # 启动 Web 界面 + 执行定时分析
+   python main.py --webui-only  # 仅启动 Web 界面
+   ```
 
-```bash
-uvicorn server:app --reload --host 0.0.0.0 --port 8000
-```
+访问 `http://127.0.0.1:8000` 即可使用。
+
+> 也可以使用 `python main.py --serve` (等效命令)
 
 ## 🗺️ Roadmap
 

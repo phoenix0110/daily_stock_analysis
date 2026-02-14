@@ -16,7 +16,8 @@ daily_stock_analysis/
 │   └── ...
 ├── data_provider/       # 多数据源适配器
 ├── bot/                 # 机器人交互模块
-├── web/                 # WebUI 模块
+├── api/                 # FastAPI 后端服务
+├── apps/dsa-web/        # React 前端
 ├── docker/              # Docker 配置
 ├── docs/                # 项目文档
 └── .github/workflows/   # GitHub Actions
@@ -33,6 +34,7 @@ daily_stock_analysis/
 - [通知渠道详细配置](#通知渠道详细配置)
 - [数据源配置](#数据源配置)
 - [高级功能](#高级功能)
+- [回测功能](#回测功能)
 - [本地 WebUI 管理界面](#本地-webui-管理界面)
 
 ---
@@ -77,6 +79,7 @@ daily_stock_analysis/
 | `EMAIL_SENDER` | 发件人邮箱（如 `xxx@qq.com`） | 可选 |
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（多个用逗号分隔，留空则发给自己） | 可选 |
+| `EMAIL_SENDER_NAME` | 发件人显示名称（默认：daily_stock_analysis股票分析助手） | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
@@ -91,6 +94,8 @@ daily_stock_analysis/
 | `SINGLE_STOCK_NOTIFY` | 单股推送模式：设为 `true` 则每分析完一只股票立即推送 | 可选 |
 | `REPORT_TYPE` | 报告类型：`simple`(精简) 或 `full`(完整)，Docker环境推荐设为 `full` | 可选 |
 | `ANALYSIS_DELAY` | 个股分析和大盘分析之间的延迟（秒），避免API限流，如 `10` | 可选 |
+| `MARKDOWN_TO_IMAGE_CHANNELS` | 将 Markdown 转为图片发送的渠道（用逗号分隔）：telegram,wechat,custom,email，需安装 wkhtmltopdf | 可选 |
+| `MARKDOWN_TO_IMAGE_MAX_CHARS` | 超过此长度不转图片，避免超大图片（默认 15000） | 可选 |
 
 #### 其他配置
 
@@ -164,6 +169,8 @@ daily_stock_analysis/
 | `EMAIL_SENDER` | 发件人邮箱 | 可选 |
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（逗号分隔，留空发给自己） | 可选 |
+| `EMAIL_SENDER_NAME` | 发件人显示名称 | 可选 |
+| `STOCK_GROUP_N` / `EMAIL_GROUP_N` | 股票分组发往不同邮箱（Issue #268），如 `STOCK_GROUP_1=600519,300750` 与 `EMAIL_GROUP_1=user1@example.com` 配对 | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook Bearer Token | 可选 |
 | `PUSHOVER_USER_KEY` | Pushover 用户 Key | 可选 |
@@ -230,28 +237,24 @@ cp .env.example .env
 vim .env  # 填入 API Key 和配置
 
 # 3. 启动容器
-docker-compose -f ./docker/docker-compose.yml up -d webui      # WebUI 模式（推荐）
+docker-compose -f ./docker/docker-compose.yml up -d server     # Web 服务模式（推荐，提供 API 与 WebUI）
 docker-compose -f ./docker/docker-compose.yml up -d analyzer   # 定时任务模式
-docker-compose -f ./docker/docker-compose.yml up -d server     # FastAPI Web模式（和WebUI模式占用相同端口注意避免冲突）
 docker-compose -f ./docker/docker-compose.yml up -d            # 同时启动两种模式
 
 # 4. 访问 WebUI
 # http://localhost:8000
 
 # 5. 查看日志
-docker-compose -f ./docker/docker-compose.yml logs -f webui
+docker-compose -f ./docker/docker-compose.yml logs -f server
 ```
 
 ### 运行模式说明
 
 | 命令 | 说明 | 端口 |
 |------|------|------|
-| `docker-compose -f ./docker/docker-compose.yml up -d webui` | WebUI 模式，手动触发分析 | 8000 |
+| `docker-compose -f ./docker/docker-compose.yml up -d server` | Web 服务模式，提供 API 与 WebUI | 8000 |
 | `docker-compose -f ./docker/docker-compose.yml up -d analyzer` | 定时任务模式，每日自动执行 | - |
-| `docker-compose -f ./docker/docker-compose.yml up -d server` | FastAPI 模式，提供 API 与静态资源 | 8000 |
 | `docker-compose -f ./docker/docker-compose.yml up -d` | 同时启动两种模式 | 8000 |
-
-> 注意：WebUI 与 FastAPI 默认端口都是 8000，若需同时启动请设置 `WEBUI_PORT` 与 `API_PORT`。
 
 ### Docker Compose 配置
 
@@ -281,14 +284,6 @@ services:
     <<: *common
     container_name: stock-analyzer
 
-  # WebUI 模式
-  webui:
-    <<: *common
-    container_name: stock-webui
-    command: ["python", "main.py", "--webui-only"]
-    ports:
-      - "8000:8000"
-
   # FastAPI 模式
   server:
     <<: *common
@@ -305,7 +300,6 @@ services:
 docker-compose -f ./docker/docker-compose.yml ps
 
 # 查看日志
-docker-compose -f ./docker/docker-compose.yml logs -f webui
 docker-compose -f ./docker/docker-compose.yml logs -f server
 
 # 停止服务
@@ -313,14 +307,13 @@ docker-compose -f ./docker/docker-compose.yml down
 
 # 重建镜像（代码更新后）
 docker-compose -f ./docker/docker-compose.yml build --no-cache
-docker-compose -f ./docker/docker-compose.yml up -d webui
+docker-compose -f ./docker/docker-compose.yml up -d server
 ```
 
 ### 手动构建镜像
 
 ```bash
 docker build -f docker/Dockerfile -t stock-analysis .
-docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --webui-only
 docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --serve-only --host 0.0.0.0 --port 8000
 ```
 
@@ -424,6 +417,16 @@ crontab -e
 - 163 邮箱：smtp.163.com:465
 - Gmail：smtp.gmail.com:587
 
+**股票分组发往不同邮箱**（Issue #268，可选）：
+配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。大盘复盘会发往所有配置的邮箱。
+
+```bash
+STOCK_GROUP_1=600519,300750
+EMAIL_GROUP_1=user1@example.com
+STOCK_GROUP_2=002594,AAPL
+EMAIL_GROUP_2=user2@example.com
+```
+
 ### 自定义 Webhook
 
 支持任意 POST JSON 的 Webhook，包括：
@@ -481,6 +484,19 @@ PUSHOVER_API_TOKEN=your_api_token
 - 支持通知优先级和声音设置
 - 免费额度足够个人使用（每月 10,000 条）
 - 消息可保留 7 天
+
+### Markdown 转图片（可选）
+
+配置 `MARKDOWN_TO_IMAGE_CHANNELS` 可将报告以图片形式发送至不支持 Markdown 的渠道（telegram, wechat, custom, email）。
+
+**依赖安装**：
+
+1. **imgkit**：已包含在 `requirements.txt`，执行 `pip install -r requirements.txt` 时会自动安装
+2. **wkhtmltopdf**：系统级依赖，需手动安装：
+   - **macOS**：`brew install wkhtmltopdf`
+   - **Debian/Ubuntu**：`apt install wkhtmltopdf`
+
+未安装或安装失败时，将自动回退为 Markdown 文本发送。
 
 ---
 
@@ -544,62 +560,129 @@ python main.py --debug
 
 ---
 
-## 本地 WebUI 管理界面
+## 回测功能
 
-WebUI 提供配置管理和快速分析功能，支持页面触发单只股票分析。
+回测模块自动对历史 AI 分析记录进行事后验证，评估分析建议的准确性。
+
+### 工作原理
+
+1. 选取已过冷却期（默认 14 天）的 `AnalysisHistory` 记录
+2. 获取分析日之后的日线数据（前向 K 线）
+3. 根据操作建议推断预期方向，与实际走势对比
+4. 评估止盈/止损命中情况，模拟执行收益
+5. 汇总为整体和单股两个维度的表现指标
+
+### 操作建议映射
+
+| 操作建议 | 仓位推断 | 预期方向 | 胜利条件 |
+|---------|---------|---------|---------|
+| 买入/加仓/strong buy | long | up | 涨幅 ≥ 中性带 |
+| 卖出/减仓/strong sell | cash | down | 跌幅 ≥ 中性带 |
+| 持有/hold | long | not_down | 未显著下跌 |
+| 观望/等待/wait | cash | flat | 价格在中性带内 |
+
+### 配置
+
+在 `.env` 中设置以下变量（均有默认值，可选）：
+
+| 变量 | 默认值 | 说明 |
+|------|-------|------|
+| `BACKTEST_ENABLED` | `true` | 是否在每日分析后自动运行回测 |
+| `BACKTEST_EVAL_WINDOW_DAYS` | `10` | 评估窗口（交易日数） |
+| `BACKTEST_MIN_AGE_DAYS` | `14` | 仅回测 N 天前的记录，避免数据不完整 |
+| `BACKTEST_ENGINE_VERSION` | `v1` | 引擎版本号，升级逻辑时用于区分结果 |
+| `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | 中性区间阈值（%），±2% 内视为震荡 |
+
+### 自动运行
+
+回测在每日分析流程完成后自动触发（非阻塞，失败不影响通知推送）。也可通过 API 手动触发。
+
+### 评估指标
+
+| 指标 | 说明 |
+|------|------|
+| `direction_accuracy_pct` | 方向预测准确率（预期方向与实际一致） |
+| `win_rate_pct` | 胜率（胜 / (胜+负)，不含中性） |
+| `avg_stock_return_pct` | 平均股票收益率 |
+| `avg_simulated_return_pct` | 平均模拟执行收益率（含止盈止损退出） |
+| `stop_loss_trigger_rate` | 止损触发率（仅统计配置了止损的记录） |
+| `take_profit_trigger_rate` | 止盈触发率（仅统计配置了止盈的记录） |
+
+---
+
+## FastAPI API 服务
+
+FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 
 ### 启动方式
 
 | 命令 | 说明 |
 |------|------|
-| `python main.py --webui` | 启动 WebUI + 执行一次完整分析 |
-| `python main.py --webui-only` | 仅启动 WebUI，手动触发分析 |
-
-**永久启用**：在 `.env` 中设置：
-```env
-WEBUI_ENABLED=true
-```
+| `python main.py --serve` | 启动 API 服务 + 执行一次完整分析 |
+| `python main.py --serve-only` | 仅启动 API 服务，手动触发分析 |
 
 ### 功能特性
 
-- 📝 **配置管理** - 查看/修改 `.env` 里的自选股列表
-- 🚀 **快速分析** - 页面输入股票代码，一键触发分析
+- 📝 **配置管理** - 查看/修改自选股列表
+- 🚀 **快速分析** - 通过 API 接口触发分析
 - 📊 **实时进度** - 分析任务状态实时更新，支持多任务并行
-- 🔗 **API 接口** - 支持程序化调用
+- 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
+- 🔗 **API 文档** - 访问 `/docs` 查看 Swagger UI
 
 ### API 接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/` | GET | 配置管理页面 |
-| `/health` | GET | 健康检查 |
-| `/analysis?code=xxx` | GET | 触发单只股票异步分析 |
-| `/analysis/history` | GET | 查询分析历史记录 |
-| `/tasks` | GET | 查询所有任务状态 |
-| `/task?id=xxx` | GET | 查询单个任务状态 |
+| `/api/v1/analysis/analyze` | POST | 触发股票分析 |
+| `/api/v1/analysis/tasks` | GET | 查询任务列表 |
+| `/api/v1/analysis/status/{task_id}` | GET | 查询任务状态 |
+| `/api/v1/history` | GET | 查询分析历史 |
+| `/api/v1/backtest/run` | POST | 触发回测 |
+| `/api/v1/backtest/results` | GET | 查询回测结果（分页） |
+| `/api/v1/backtest/performance` | GET | 获取整体回测表现 |
+| `/api/v1/backtest/performance/{code}` | GET | 获取单股回测表现 |
+| `/api/health` | GET | 健康检查 |
+| `/docs` | GET | API Swagger 文档 |
 
 **调用示例**：
 ```bash
 # 健康检查
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/api/health
 
 # 触发分析（A股）
-curl "http://127.0.0.1:8000/analysis?code=600519"
-
-# 触发分析（港股）
-curl "http://127.0.0.1:8000/analysis?code=hk00700"
+curl -X POST http://127.0.0.1:8000/api/v1/analysis/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"stock_code": "600519"}'
 
 # 查询任务状态
-curl "http://127.0.0.1:8000/task?id=<task_id>"
+curl http://127.0.0.1:8000/api/v1/analysis/status/<task_id>
+
+# 触发回测（全部股票）
+curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
+  -H 'Content-Type: application/json' \
+  -d '{"force": false}'
+
+# 触发回测（指定股票）
+curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
+  -H 'Content-Type: application/json' \
+  -d '{"code": "600519", "force": false}'
+
+# 查询整体回测表现
+curl http://127.0.0.1:8000/api/v1/backtest/performance
+
+# 查询单股回测表现
+curl http://127.0.0.1:8000/api/v1/backtest/performance/600519
+
+# 分页查询回测结果
+curl "http://127.0.0.1:8000/api/v1/backtest/results?page=1&limit=20"
 ```
 
 ### 自定义配置
 
 修改默认端口或允许局域网访问：
 
-```env
-WEBUI_HOST=0.0.0.0    # 默认 127.0.0.1
-WEBUI_PORT=8888       # 默认 8000
+```bash
+python main.py --serve-only --host 0.0.0.0 --port 8888
 ```
 
 ### 支持的股票代码格式
