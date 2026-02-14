@@ -11,17 +11,30 @@ A股自选股智能分析系统 - 配置管理模块
 """
 
 import os
+import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
 
-def setup_env():
-    """初始化环境变量（支持从 .env 加载）"""
+def setup_env(override: bool = False):
+    """
+    Initialize environment variables from .env file.
+
+    Args:
+        override: If True, overwrite existing environment variables with values
+                  from .env file. Set to True when reloading config after updates.
+                  Default is False to preserve behavior on initial load where
+                  system environment variables take precedence.
+    """
     # src/config.py -> src/ -> root
-    env_path = Path(__file__).parent.parent / '.env'
-    load_dotenv(dotenv_path=env_path)
+    env_file = os.getenv("ENV_FILE")
+    if env_file:
+        env_path = Path(env_file)
+    else:
+        env_path = Path(__file__).parent.parent / '.env'
+    load_dotenv(dotenv_path=env_path, override=override)
 
 
 @dataclass
@@ -71,6 +84,7 @@ class Config:
     # === 搜索引擎配置（支持多 Key 负载均衡）===
     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
+    brave_api_keys: List[str] = field(default_factory=list)  # Brave Search API Keys
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
     
     # === 通知配置（可同时配置多个，全部推送）===
@@ -84,12 +98,18 @@ class Config:
     # Telegram 配置（需要同时配置 Bot Token 和 Chat ID）
     telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
     telegram_chat_id: Optional[str] = None  # Chat ID
+    telegram_message_thread_id: Optional[str] = None  # Topic ID (Message Thread ID) for groups
     
     # 邮件配置（只需邮箱和授权码，SMTP 自动识别）
     email_sender: Optional[str] = None  # 发件人邮箱
+    email_sender_name: str = "daily_stock_analysis股票分析助手"  # 发件人显示名称
     email_password: Optional[str] = None  # 邮箱密码/授权码
     email_receivers: List[str] = field(default_factory=list)  # 收件人列表（留空则发给自己）
-    
+
+    # Stock-to-email group routing (Issue #268): STOCK_GROUP_N + EMAIL_GROUP_N
+    # When configured, each group's report is sent to that group's emails only.
+    stock_email_groups: List[Tuple[List[str], List[str]]] = field(default_factory=list)
+
     # Pushover 配置（手机/桌面推送通知）
     pushover_user_key: Optional[str] = None  # 用户 Key（https://pushover.net 获取）
     pushover_api_token: Optional[str] = None  # 应用 API Token
@@ -117,6 +137,9 @@ class Config:
     # PushPlus 推送配置
     pushplus_token: Optional[str] = None  # PushPlus Token
 
+    # Server酱3 推送配置
+    serverchan3_sendkey: Optional[str] = None  # Server酱3 SendKey
+
     # 分析间隔时间（秒）- 用于避免API限流
     analysis_delay: float = 0.0  # 个股分析与大盘分析之间的延迟
 
@@ -124,9 +147,23 @@ class Config:
     feishu_max_bytes: int = 20000  # 飞书限制约 20KB，默认 20000 字节
     wechat_max_bytes: int = 4000   # 企业微信限制 4096 字节，默认 4000 字节
     wechat_msg_type: str = "markdown"  # 企业微信消息类型，默认 markdown 类型
-    
+
+    # Markdown 转图片（Issue #289）：对不支持 Markdown 的渠道以图片发送
+    markdown_to_image_channels: List[str] = field(default_factory=list)  # 逗号分隔：telegram,wechat,custom,email
+    markdown_to_image_max_chars: int = 15000  # 超过此长度不转换，避免超大图片
+
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
+
+    # 是否保存分析上下文快照（用于历史回溯）
+    save_context_snapshot: bool = True
+
+    # === 回测配置 ===
+    backtest_enabled: bool = True
+    backtest_eval_window_days: int = 10
+    backtest_min_age_days: int = 14
+    backtest_engine_version: str = "v1"
+    backtest_neutral_band_pct: float = 2.0
     
     # === 日志配置 ===
     log_dir: str = "./logs"  # 日志文件目录
@@ -304,6 +341,9 @@ class Config:
         serpapi_keys_str = os.getenv('SERPAPI_API_KEYS', '')
         serpapi_keys = [k.strip() for k in serpapi_keys_str.split(',') if k.strip()]
 
+        brave_keys_str = os.getenv('BRAVE_API_KEYS', '')
+        brave_api_keys = [k.strip() for k in brave_keys_str.split(',') if k.strip()]
+
         # 企微消息类型与最大字节数逻辑
         wechat_msg_type = os.getenv('WECHAT_MSG_TYPE', 'markdown')
         wechat_msg_type_lower = wechat_msg_type.lower()
@@ -336,17 +376,22 @@ class Config:
             openai_temperature=float(os.getenv('OPENAI_TEMPERATURE', '0.7')),
             bocha_api_keys=bocha_api_keys,
             tavily_api_keys=tavily_api_keys,
+            brave_api_keys=brave_api_keys,
             serpapi_keys=serpapi_keys,
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
             telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
+            telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
             email_sender=os.getenv('EMAIL_SENDER'),
+            email_sender_name=os.getenv('EMAIL_SENDER_NAME', 'daily_stock_analysis股票分析助手'),
             email_password=os.getenv('EMAIL_PASSWORD'),
             email_receivers=[r.strip() for r in os.getenv('EMAIL_RECEIVERS', '').split(',') if r.strip()],
+            stock_email_groups=cls._parse_stock_email_groups(),
             pushover_user_key=os.getenv('PUSHOVER_USER_KEY'),
             pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
             pushplus_token=os.getenv('PUSHPLUS_TOKEN'),
+            serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
@@ -360,7 +405,19 @@ class Config:
             feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
             wechat_max_bytes=wechat_max_bytes,
             wechat_msg_type=wechat_msg_type_lower,
+            markdown_to_image_channels=[
+                c.strip().lower()
+                for c in os.getenv('MARKDOWN_TO_IMAGE_CHANNELS', '').split(',')
+                if c.strip()
+            ],
+            markdown_to_image_max_chars=int(os.getenv('MARKDOWN_TO_IMAGE_MAX_CHARS', '15000')),
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
+            save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
+            backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
+            backtest_eval_window_days=int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS', '10')),
+            backtest_min_age_days=int(os.getenv('BACKTEST_MIN_AGE_DAYS', '14')),
+            backtest_engine_version=os.getenv('BACKTEST_ENGINE_VERSION', 'v1'),
+            backtest_neutral_band_pct=float(os.getenv('BACKTEST_NEUTRAL_BAND_PCT', '2.0')),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
             max_workers=int(os.getenv('MAX_WORKERS', '3')),
@@ -404,11 +461,68 @@ class Config:
             # - akshare_sina: 新浪财经，基本行情稳定，但无量比
             # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
             # - tushare: Tushare Pro，需要2000积分，数据全面
-            realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'tencent,akshare_sina,efinance,akshare_em'),
+            realtime_source_priority=cls._resolve_realtime_source_priority(),
             realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
             circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300'))
         )
     
+    @classmethod
+    def _parse_stock_email_groups(cls) -> List[Tuple[List[str], List[str]]]:
+        """
+        Parse STOCK_GROUP_N and EMAIL_GROUP_N from environment.
+        Returns [(stocks, emails), ...] ordered by group index.
+        """
+        groups: dict = {}
+        stock_re = re.compile(r'^STOCK_GROUP_(\d+)$', re.IGNORECASE)
+        email_re = re.compile(r'^EMAIL_GROUP_(\d+)$', re.IGNORECASE)
+        for key in os.environ:
+            m = stock_re.match(key)
+            if m:
+                idx = int(m.group(1))
+                val = os.environ[key].strip()
+                groups.setdefault(idx, {})['stocks'] = [c.strip() for c in val.split(',') if c.strip()]
+            m = email_re.match(key)
+            if m:
+                idx = int(m.group(1))
+                val = os.environ[key].strip()
+                groups.setdefault(idx, {})['emails'] = [e.strip() for e in val.split(',') if e.strip()]
+        result = []
+        for idx in sorted(groups.keys()):
+            g = groups[idx]
+            if 'stocks' in g and 'emails' in g and g['stocks'] and g['emails']:
+                result.append((g['stocks'], g['emails']))
+        return result
+
+    @classmethod
+    def _resolve_realtime_source_priority(cls) -> str:
+        """
+        Resolve realtime source priority with automatic tushare injection.
+
+        When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
+        explicitly set, automatically prepend 'tushare' to the default priority
+        so that the paid data source is utilized for realtime quotes as well.
+        """
+        explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
+        default_priority = 'tencent,akshare_sina,efinance,akshare_em'
+
+        if explicit:
+            # User explicitly set priority, respect it
+            return explicit
+
+        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
+        if tushare_token:
+            # Token configured but no explicit priority override
+            # Prepend tushare so the paid source is tried first
+            import logging
+            logger = logging.getLogger(__name__)
+            resolved = f'tushare,{default_priority}'
+            logger.info(
+                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
+            )
+            return resolved
+
+        return default_priority
+
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（主要用于测试）"""
@@ -424,7 +538,8 @@ class Config:
         """
         # 优先从 .env 文件读取最新配置，这样即使在容器环境中修改了 .env 文件，
         # 也能获取到最新的股票列表配置
-        env_path = Path(__file__).parent.parent / '.env'
+        env_file = os.getenv("ENV_FILE")
+        env_path = Path(env_file) if env_file else (Path(__file__).parent.parent / '.env')
         stock_list_str = ''
         if env_path.exists():
             # 直接从 .env 文件读取最新的配置
@@ -475,8 +590,8 @@ class Config:
         else:
             warnings.append(f"✓ 已配置 AI API: {', '.join(configured_apis)}")
         
-        if not self.bocha_api_keys and not self.tavily_api_keys and not self.serpapi_keys:
-            warnings.append("提示：未配置搜索引擎 API Key (Bocha/Tavily/SerpAPI)，新闻搜索功能将不可用")
+        if not self.bocha_api_keys and not self.tavily_api_keys and not self.brave_api_keys and not self.serpapi_keys:
+            warnings.append("提示：未配置搜索引擎 API Key (Bocha/Tavily/Brave/SerpAPI)，新闻搜索功能将不可用")
         
         # 检查通知配置
         has_notification = (
@@ -486,6 +601,7 @@ class Config:
             (self.email_sender and self.email_password) or
             (self.pushover_user_key and self.pushover_api_token) or
             self.pushplus_token or
+            self.serverchan3_sendkey or
             (self.custom_webhook_urls and self.custom_webhook_bearer_token) or
             (self.discord_bot_token and self.discord_main_channel_id) or
             self.discord_webhook_url

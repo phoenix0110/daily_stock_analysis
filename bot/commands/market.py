@@ -83,10 +83,11 @@ class MarketCommand(BotCommand):
 
             # 初始化搜索服务
             search_service = None
-            if config.bocha_api_keys or config.tavily_api_keys or config.serpapi_keys:
+            if config.bocha_api_keys or config.tavily_api_keys or config.brave_api_keys or config.serpapi_keys:
                 search_service = SearchService(
                     bocha_keys=config.bocha_api_keys,
                     tavily_keys=config.tavily_api_keys,
+                    brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys
                 )
 
@@ -106,7 +107,7 @@ class MarketCommand(BotCommand):
             if review_report:
                 # 推送结果
                 report_content = f"🎯 **大盘复盘**\n\n{review_report}"
-                notifier.send(report_content)
+                notifier.send(report_content, email_send_to_all=True)
                 logger.info("[MarketCommand] 大盘复盘完成并已推送")
             else:
                 logger.warning("[MarketCommand] 大盘复盘返回空结果")
